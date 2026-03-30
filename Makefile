@@ -266,3 +266,28 @@ generate: ## Roda go generate
 mod-graph: ## Exibe gráfico de dependências
 	@echo "$(GREEN)📊 Gráfico de dependências:$(NC)"
 	$(GO) mod graph
+
+##@ Versionamento e Fork (EvolutionAPI)
+
+UPSTREAM_URL := https://github.com/EvolutionAPI/evolution-go.git
+
+setup-upstream: ## Configura o remote upstream oficial
+	@git remote get-url upstream >/dev/null 2>&1 || git remote add upstream $(UPSTREAM_URL)
+	@echo "$(GREEN)🔗 Configuração Upstream (Oficial) realizada.$(NC)"
+
+sync-main: setup-upstream ## Sincroniza a branch main com o upstream
+	@echo "$(GREEN)⬇️ Sincronizando a base 'main' com o projeto oficial...$(NC)"
+	git fetch upstream
+	git checkout main
+	git pull upstream main --rebase
+	@echo "$(GREEN)✅ Base 'main' 100% atualizada!$(NC)"
+
+build-custom: sync-main ## Constrói a custom-main com os fixes locais
+	@echo "$(GREEN)🏗️ Reconstruindo a sua 'custom-main' limpa...$(NC)"
+	git checkout main
+	git branch -D custom-main || true
+	git checkout -b custom-main
+	@echo "$(YELLOW)🧩 Aplicando correções locais...$(NC)"
+	-git merge fix/auth-grupos --no-edit
+	-git merge fix/preview --no-edit
+	@echo "$(GREEN)🚀 Branch 'custom-main' recriada e pronta para deploy!$(NC)"
