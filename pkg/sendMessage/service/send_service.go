@@ -8,15 +8,21 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/draw"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	_ "golang.org/x/image/webp"
 
 	config "github.com/EvolutionAPI/evolution-go/pkg/config"
 	instance_model "github.com/EvolutionAPI/evolution-go/pkg/instance/model"
@@ -28,6 +34,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
+	xdraw "golang.org/x/image/draw"
 	"golang.org/x/net/html"
 	"google.golang.org/protobuf/proto"
 )
@@ -234,12 +241,12 @@ type CarouselCardStruct struct {
 }
 
 type CarouselStruct struct {
-	Number    string             `json:"number"`
-	Body      string             `json:"body,omitempty"`
-	Footer    string             `json:"footer,omitempty"`
-	Delay     int32              `json:"delay"`
-	FormatJid *bool              `json:"formatJid,omitempty"`
-	Quoted    QuotedStruct       `json:"quoted"`
+	Number    string               `json:"number"`
+	Body      string               `json:"body,omitempty"`
+	Footer    string               `json:"footer,omitempty"`
+	Delay     int32                `json:"delay"`
+	FormatJid *bool                `json:"formatJid,omitempty"`
+	Quoted    QuotedStruct         `json:"quoted"`
 	Cards     []CarouselCardStruct `json:"cards"`
 }
 
@@ -524,12 +531,29 @@ func (s *sendService) sendTextWithRetry(data *TextStruct, instance *instance_mod
 	return nil, fmt.Errorf("failed to send text after %d attempts", maxRetries)
 }
 
-func fetchLinkMetadata(url string) (string, string, string, error) {
-	resp, err := http.Get(url)
+func fetchLinkMetadata(targetUrl string) (string, string, string, error) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", targetUrl, nil)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	// Identificar-se como WhatsApp para obter metadados otimizados
+	req.Header.Set("User-Agent", "WhatsApp/2.24.8.85")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", "", err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", "", "", fmt.Errorf("failed to fetch metadata: status %d", resp.StatusCode)
+	}
 
 	doc, err := html.Parse(resp.Body)
 	if err != nil {
@@ -541,25 +565,29 @@ func fetchLinkMetadata(url string) (string, string, string, error) {
 	var f func(*html.Node)
 	f = func(n *html.Node) {
 		if n.Type == html.ElementNode {
-			if n.Data == "title" && n.FirstChild != nil {
+			if n.Data == "title" && n.FirstChild != nil && title == "" {
 				title = n.FirstChild.Data
 			}
 			if n.Data == "meta" {
-				var property, content string
+				var property, name, content string
 				for _, attr := range n.Attr {
-					if attr.Key == "property" || attr.Key == "name" {
+					if attr.Key == "property" {
 						property = attr.Val
-					}
-					if attr.Key == "content" {
+					} else if attr.Key == "name" {
+						name = attr.Val
+					} else if attr.Key == "content" {
 						content = attr.Val
 					}
 				}
 
-				if (property == "description" || property == "og:description") && content != "" {
+				// Prioridade para OpenGraph tags
+				if property == "og:title" && content != "" {
+					title = content
+				}
+				if (property == "og:description" || name == "description") && description == "" {
 					description = content
 				}
-
-				if property == "og:image" && content != "" {
+				if (property == "og:image" || name == "twitter:image") && imgURL == "" {
 					imgURL = content
 				}
 			}
@@ -572,7 +600,106 @@ func fetchLinkMetadata(url string) (string, string, string, error) {
 
 	f(doc)
 
-	return title, description, imgURL, nil
+	// Resolver URLs relativas de imagem
+	if imgURL != "" {
+		if base, err := url.Parse(targetUrl); err == nil {
+			if img, err := url.Parse(imgURL); err == nil {
+				imgURL = base.ResolveReference(img).String()
+			}
+		}
+	}
+
+	return strings.TrimSpace(title), strings.TrimSpace(description), imgURL, nil
+}
+
+func (s *sendService) resizeThumbnail(data []byte, maxDim int) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+
+	// Tentar decodificar a imagem (suporta JPEG, PNG, WEBP via drivers registrados)
+	src, format, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		s.loggerWrapper.GetLogger("").LogWarn("Failed to decode image for thumbnail: %v", err)
+		return data
+	}
+
+	bounds := src.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+
+	// Se já estiver dentro do limite, não redimensionar
+	if w <= maxDim && h <= maxDim && len(data) < 32768 {
+		return data
+	}
+
+	// Calcular novas dimensões mantendo o aspect ratio
+	newW, newH := w, h
+	if w > maxDim || h > maxDim {
+		if w > h {
+			newW = maxDim
+			newH = (h * maxDim) / w
+		} else {
+			newH = maxDim
+			newW = (w * maxDim) / h
+		}
+	}
+
+	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	xdraw.BiLinear.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
+
+	var buf bytes.Buffer
+	// Codificar como JPEG com qualidade 80 para garantir tamanho pequeno
+	err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 80})
+	if err != nil {
+		return data
+	}
+
+	s.loggerWrapper.GetLogger("").LogInfo("Thumbnail resized from %d to %d bytes (format: %s)", len(data), buf.Len(), format)
+	return buf.Bytes()
+}
+
+func (s *sendService) getVideoThumbnail(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+
+	// Tentar encontrar ffmpeg
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		s.loggerWrapper.GetLogger("").LogWarn("ffmpeg not found, skipping video thumbnail generation")
+		return nil
+	}
+
+	// Criar arquivo temporário para o vídeo
+	tmpFile, err := os.CreateTemp("", "video_*.mp4")
+	if err != nil {
+		return nil
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		return nil
+	}
+
+	// Executar ffmpeg para extrair o primeiro quadro (1 segundo adentro para evitar telas pretas)
+	// -vframes 1: extrai apenas 1 frame
+	// -f image2 pipe:1: envia o output (imagem) para o stdout
+	cmd := exec.Command(ffmpegPath, "-i", tmpFile.Name(), "-ss", "00:00:01", "-vframes", "1", "-f", "image2", "pipe:1")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		// Se falhar em 1 segundo, tentar no início (0 segundos)
+		cmd = exec.Command(ffmpegPath, "-i", tmpFile.Name(), "-vframes", "1", "-f", "image2", "pipe:1")
+		out.Reset()
+		cmd.Stdout = &out
+		if err := cmd.Run(); err != nil {
+			return nil
+		}
+	}
+
+	// Redimensionar o frame extraído para servir de thumbnail
+	return s.resizeThumbnail(out.Bytes(), 100)
 }
 
 func (s *sendService) SendLink(data *LinkStruct, instance *instance_model.Instance) (*MessageSendStruct, error) {
@@ -591,36 +718,54 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 			continue
 		}
 
-		matchedText := findURL(data.Text)
+		matchedText := data.Url
+		if matchedText == "" {
+			matchedText = findURL(data.Text)
+		}
 
 		if matchedText != "" {
-			title, description, imgUrl, err := fetchLinkMetadata(matchedText)
-			if err != nil {
-				if attempt == maxRetries {
-					return nil, err
+			// Só buscar metadados se os campos estiverem vazios
+			if data.Title == "" || data.Description == "" || data.ImgUrl == "" {
+				title, description, imgUrl, err := fetchLinkMetadata(matchedText)
+				if err == nil {
+					if data.Title == "" {
+						data.Title = title
+					}
+					if data.Description == "" {
+						data.Description = description
+					}
+					if data.ImgUrl == "" {
+						data.ImgUrl = imgUrl
+					}
+				} else {
+					s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Failed to fetch link metadata for %s: %v", instance.Id, matchedText, err)
 				}
-				continue
 			}
-
-			data.Title = title
-			data.Description = description
-			data.ImgUrl = imgUrl
 		}
 
 		var fileData []byte
 		if data.ImgUrl != "" {
-			resp, err := http.Get(data.ImgUrl)
-			if err != nil {
-				if attempt == maxRetries {
-					return nil, err
+			// Download da imagem da miniatura com User-Agent para evitar bloqueios em produção
+			imgReq, err := http.NewRequest("GET", data.ImgUrl, nil)
+			if err == nil {
+				imgReq.Header.Set("User-Agent", "WhatsApp/2.24.8.85")
+				imgReq.Header.Set("Accept", "image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+
+				imgClient := &http.Client{Timeout: 10 * time.Second}
+				imgResp, err := imgClient.Do(imgReq)
+				if err == nil && imgResp.StatusCode == http.StatusOK {
+					defer imgResp.Body.Close()
+					fileData, _ = io.ReadAll(imgResp.Body)
+					fileData = s.resizeThumbnail(fileData, 100)
+				} else if err != nil {
+					s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Failed to download link preview image: %v", instance.Id, err)
+				} else {
+					s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Failed to download link preview image: status %d", instance.Id, imgResp.StatusCode)
 				}
-				continue
 			}
-			defer resp.Body.Close()
-			fileData, _ = io.ReadAll(resp.Body)
 		}
 
-		previewType := waE2E.ExtendedTextMessage_VIDEO
+		mediaType := waE2E.ContextInfo_ExternalAdReplyInfo_IMAGE
 		msg := &waE2E.Message{
 			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 				Text:          &data.Text,
@@ -628,7 +773,16 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 				MatchedText:   &matchedText,
 				JPEGThumbnail: fileData,
 				Description:   &data.Description,
-				PreviewType:   &previewType,
+				ContextInfo: &waE2E.ContextInfo{
+					ExternalAdReply: &waE2E.ContextInfo_ExternalAdReplyInfo{
+						Title:                 &data.Title,
+						Body:                  &data.Description,
+						MediaType:             &mediaType,
+						Thumbnail:             fileData,
+						SourceURL:             &matchedText,
+						RenderLargerThumbnail: proto.Bool(true),
+					},
+				},
 			},
 		}
 
@@ -909,7 +1063,6 @@ func (s *sendService) sendMediaFileWithRetry(data *MediaStruct, fileData []byte,
 		switch data.Type {
 		case "image":
 			if isNewsletter {
-				// Newsletter: SEM MediaKey e FileEncSHA256
 				media = &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
 					Caption:    proto.String(data.Caption),
 					URL:        &uploaded.URL,
@@ -919,7 +1072,7 @@ func (s *sendService) sendMediaFileWithRetry(data *MediaStruct, fileData []byte,
 					FileLength: &uploaded.FileLength,
 				}}
 			} else {
-				// Normal: COM MediaKey e FileEncSHA256
+				thumbnail := s.resizeThumbnail(fileData, 100)
 				media = &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
 					Caption:       proto.String(data.Caption),
 					URL:           proto.String(uploaded.URL),
@@ -929,6 +1082,7 @@ func (s *sendService) sendMediaFileWithRetry(data *MediaStruct, fileData []byte,
 					FileEncSHA256: uploaded.FileEncSHA256,
 					FileSHA256:    uploaded.FileSHA256,
 					FileLength:    proto.Uint64(uint64(len(fileData))),
+					JPEGThumbnail: thumbnail,
 				}}
 			}
 			mediaType = "ImageMessage"
@@ -943,6 +1097,7 @@ func (s *sendService) sendMediaFileWithRetry(data *MediaStruct, fileData []byte,
 					FileLength: &uploaded.FileLength,
 				}}
 			} else {
+				thumbnail := s.getVideoThumbnail(fileData)
 				media = &waE2E.Message{VideoMessage: &waE2E.VideoMessage{
 					Caption:       proto.String(data.Caption),
 					URL:           proto.String(uploaded.URL),
@@ -952,6 +1107,7 @@ func (s *sendService) sendMediaFileWithRetry(data *MediaStruct, fileData []byte,
 					FileEncSHA256: uploaded.FileEncSHA256,
 					FileSHA256:    uploaded.FileSHA256,
 					FileLength:    proto.Uint64(uint64(len(fileData))),
+					JPEGThumbnail: thumbnail,
 				}}
 			}
 			mediaType = "VideoMessage"
@@ -1204,6 +1360,7 @@ func (s *sendService) sendMediaUrlWithRetry(data *MediaStruct, instance *instanc
 				}}
 			} else {
 				// Normal: com criptografia
+				thumbnail := s.resizeThumbnail(fileData, 100)
 				media = &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
 					Caption:       proto.String(data.Caption),
 					URL:           proto.String(uploaded.URL),
@@ -1213,6 +1370,7 @@ func (s *sendService) sendMediaUrlWithRetry(data *MediaStruct, instance *instanc
 					FileEncSHA256: uploaded.FileEncSHA256,
 					FileSHA256:    uploaded.FileSHA256,
 					FileLength:    proto.Uint64(uint64(len(fileData))),
+					JPEGThumbnail: thumbnail,
 				}}
 			}
 			mediaType = "ImageMessage"
@@ -1227,6 +1385,7 @@ func (s *sendService) sendMediaUrlWithRetry(data *MediaStruct, instance *instanc
 					FileLength: &uploaded.FileLength,
 				}}
 			} else {
+				thumbnail := s.getVideoThumbnail(fileData)
 				media = &waE2E.Message{VideoMessage: &waE2E.VideoMessage{
 					Caption:       proto.String(data.Caption),
 					URL:           proto.String(uploaded.URL),
@@ -1236,6 +1395,7 @@ func (s *sendService) sendMediaUrlWithRetry(data *MediaStruct, instance *instanc
 					FileEncSHA256: uploaded.FileEncSHA256,
 					FileSHA256:    uploaded.FileSHA256,
 					FileLength:    proto.Uint64(uint64(len(fileData))),
+					JPEGThumbnail: thumbnail,
 				}}
 			}
 			mediaType = "VideoMessage"
@@ -2373,6 +2533,7 @@ func (s *sendService) SendCarousel(data *CarouselStruct, instance *instance_mode
 						uploaded, err := client.Upload(context.Background(), fileData, whatsmeow.MediaImage)
 						if err == nil {
 							header.HasMediaAttachment = proto.Bool(true)
+							thumbnail := s.resizeThumbnail(fileData, 600)
 							header.Media = &waE2E.InteractiveMessage_Header_ImageMessage{
 								ImageMessage: &waE2E.ImageMessage{
 									URL:           proto.String(uploaded.URL),
@@ -2382,6 +2543,7 @@ func (s *sendService) SendCarousel(data *CarouselStruct, instance *instance_mode
 									FileEncSHA256: uploaded.FileEncSHA256,
 									FileSHA256:    uploaded.FileSHA256,
 									FileLength:    proto.Uint64(uint64(len(fileData))),
+									JPEGThumbnail: thumbnail,
 								},
 							}
 						}
