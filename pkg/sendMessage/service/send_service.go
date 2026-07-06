@@ -3,6 +3,7 @@ package send_service
 import (
 	"bytes"
 	"context"
+	cryptoRand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -1876,18 +1877,35 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 
 	templateId := strconv.FormatInt(time.Now().UnixNano()/1000000, 10)
 	messageParamsJSON := `{"from":"api","templateId":` + templateId + `}`
+	msgSecret := make([]byte, 32)
+	_, _ = cryptoRand.Read(msgSecret)
 
 	var msg *waE2E.Message
 
 	if hasPix {
+		paymentMsgParams := `{"native_flow_name":"order_details","version":1}`
+		var interactiveBody *waE2E.InteractiveMessage_Body
+		if data.Title != "" {
+			interactiveBody = &waE2E.InteractiveMessage_Body{Text: &data.Title}
+		}
+
 		msg = &waE2E.Message{
-			InteractiveMessage: &waE2E.InteractiveMessage{
-				InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
-					NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
-						Buttons:           buttons,
-						MessageParamsJSON: &messageParamsJSON,
+			DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
+				Message: &waE2E.Message{
+					InteractiveMessage: &waE2E.InteractiveMessage{
+						Body: interactiveBody,
+						InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+							NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+								Buttons:           buttons,
+								MessageParamsJSON: &paymentMsgParams,
+								MessageVersion:    proto.Int32(1),
+							},
+						},
 					},
 				},
+			},
+			MessageContextInfo: &waE2E.MessageContextInfo{
+				MessageSecret: msgSecret,
 			},
 		}
 	} else {
@@ -1928,8 +1946,21 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 			}
 		}
 
-		msg = &waE2E.Message{
-			InteractiveMessage: interactiveMsg,
+		if hasReply {
+			msg = &waE2E.Message{
+				InteractiveMessage: interactiveMsg,
+			}
+		} else {
+			msg = &waE2E.Message{
+				DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
+					Message: &waE2E.Message{
+						InteractiveMessage: interactiveMsg,
+					},
+				},
+				MessageContextInfo: &waE2E.MessageContextInfo{
+					MessageSecret: msgSecret,
+				},
+			}
 		}
 	}
 
@@ -2264,6 +2295,14 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 		case "InteractiveMessage":
 			if m.InteractiveMessage != nil {
 				m.InteractiveMessage.ContextInfo = &waE2E.ContextInfo{
+					StanzaID:      proto.String(data.Quoted.MessageID),
+					Participant:   proto.String(data.Quoted.Participant),
+					QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
+				}
+			} else if msg.DocumentWithCaptionMessage != nil &&
+				msg.DocumentWithCaptionMessage.Message != nil &&
+				msg.DocumentWithCaptionMessage.Message.InteractiveMessage != nil {
+				msg.DocumentWithCaptionMessage.Message.InteractiveMessage.ContextInfo = &waE2E.ContextInfo{
 					StanzaID:      proto.String(data.Quoted.MessageID),
 					Participant:   proto.String(data.Quoted.Participant),
 					QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
