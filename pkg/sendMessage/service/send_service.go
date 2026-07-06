@@ -187,6 +187,7 @@ type ButtonStruct struct {
 	Title        string       `json:"title"`
 	Description  string       `json:"description"`
 	Footer       string       `json:"footer"`
+	Id           string       `json:"id"`
 	Buttons      []Button     `json:"buttons"`
 	Delay        int32        `json:"delay"`
 	MentionedJID []string     `json:"mentionedJid"`
@@ -210,6 +211,7 @@ type ListStruct struct {
 	Number       string       `json:"number"`
 	Title        string       `json:"title"`
 	Description  string       `json:"description"`
+	Id           string       `json:"id"`
 	ButtonText   string       `json:"buttonText"`
 	FooterText   string       `json:"footerText"`
 	Sections     []Section    `json:"sections"`
@@ -249,6 +251,7 @@ type CarouselStruct struct {
 	Number    string               `json:"number"`
 	Body      string               `json:"body,omitempty"`
 	Footer    string               `json:"footer,omitempty"`
+	Id        string               `json:"id"`
 	Delay     int32                `json:"delay"`
 	FormatJid *bool                `json:"formatJid,omitempty"`
 	Quoted    QuotedStruct         `json:"quoted"`
@@ -1748,7 +1751,7 @@ func mapKeyType(keyType string) string {
 }
 
 func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.Instance) (*MessageSendStruct, error) {
-	client, err := s.ensureClientConnected(instance.Id)
+	_, err := s.ensureClientConnected(instance.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -1788,36 +1791,87 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 	buttons := []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{}
 
 	for _, v := range data.Buttons {
-		var paramsJSON *string
-
-		var name *string
+		var (
+			name       string
+			paramsData map[string]interface{}
+		)
 
 		switch v.Type {
 		case "reply":
-			name = proto.String("quick_reply")
-			paramsJSON = proto.String(`{"display_text":"` + v.DisplayText + `","id":"` + v.Id + `"}`)
+			name = "quick_reply"
+			paramsData = map[string]interface{}{
+				"display_text": v.DisplayText,
+				"id":           v.Id,
+			}
 		case "copy":
-			name = proto.String("cta_copy")
-			paramsJSON = proto.String(`{"display_text":"` + v.DisplayText + `","copy_code":"` + v.CopyCode + `"}`)
+			name = "cta_copy"
+			paramsData = map[string]interface{}{
+				"display_text": v.DisplayText,
+				"copy_code":    v.CopyCode,
+			}
 		case "url":
-			name = proto.String("cta_url")
-			paramsJSON = proto.String(`{"display_text":"` + v.DisplayText + `","url":"` + v.URL + `","merchant_url":"` + v.URL + `"}`)
+			name = "cta_url"
+			paramsData = map[string]interface{}{
+				"display_text": v.DisplayText,
+				"url":          v.URL,
+				"merchant_url": v.URL,
+			}
 		case "call":
-			name = proto.String("cta_call")
-			paramsJSON = proto.String(`{"display_text":"` + v.DisplayText + `","phone_number":"` + v.PhoneNumber + `"}`)
+			name = "cta_call"
+			paramsData = map[string]interface{}{
+				"display_text": v.DisplayText,
+				"phone_number": v.PhoneNumber,
+			}
 		case "pix":
 			randomId := utils.GenerateRandomString(11)
-			name = proto.String("payment_info")
-			paramsJSON = proto.String(`{"currency":"` + v.Currency + `","total_amount":{"value":0,"offset":100},"reference_id":"` + randomId + `","type":"physical-goods","order":{"status":"pending","subtotal":{"value":0,"offset":100},"order_type":"ORDER","items":[{"name":"","amount":{"value":0,"offset":100},"quantity":0,"sale_amount":{"value":0,"offset":100}}]},"payment_settings":[{"type":"pix_static_code","pix_static_code":{"merchant_name":"` + v.Name + `","key":"` + v.Key + `","key_type":"` + mapKeyType(v.KeyType) + `"}}],"share_payment_status":false}`)
+			name = "payment_info"
+			amount := map[string]interface{}{"value": 0, "offset": 100}
+			paramsData = map[string]interface{}{
+				"currency":     v.Currency,
+				"total_amount": amount,
+				"reference_id": randomId,
+				"type":         "physical-goods",
+				"order": map[string]interface{}{
+					"status":     "pending",
+					"subtotal":   amount,
+					"order_type": "ORDER",
+					"items": []map[string]interface{}{
+						{
+							"name":        "",
+							"amount":      amount,
+							"quantity":    0,
+							"sale_amount": amount,
+						},
+					},
+				},
+				"payment_settings": []map[string]interface{}{
+					{
+						"type": "pix_static_code",
+						"pix_static_code": map[string]interface{}{
+							"merchant_name": v.Name,
+							"key":           v.Key,
+							"key_type":      mapKeyType(v.KeyType),
+						},
+					},
+				},
+				"share_payment_status": false,
+			}
+		default:
+			return nil, fmt.Errorf("tipo de botão inválido: %s", v.Type)
 		}
 
+		paramsJSONBytes, err := json.Marshal(paramsData)
+		if err != nil {
+			return nil, err
+		}
+		paramsJSON := string(paramsJSONBytes)
+
 		buttons = append(buttons, &waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
-			Name:             name,
-			ButtonParamsJSON: paramsJSON,
+			Name:             proto.String(name),
+			ButtonParamsJSON: &paramsJSON,
 		})
 	}
 
-	messageId := client.GenerateMessageID()
 	templateId := strconv.FormatInt(time.Now().UnixNano()/1000000, 10)
 	messageParamsJSON := `{"from":"api","templateId":` + templateId + `}`
 
@@ -1877,55 +1931,20 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 		}
 	}
 
-	recipient, err := s.validateAndCheckUserExists(data.Number, data.FormatJid, &data.Quoted.MessageID, &data.Quoted.MessageID, instance)
-	if err != nil {
-		s.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Error validating message fields or user check: %v", instance.Id, err)
-		return nil, err
-	}
-
-	if data.Delay > 0 {
-		err := client.SendChatPresence(context.Background(), recipient, types.ChatPresence("composing"), types.ChatPresenceMedia(""))
-		if err != nil {
-			return nil, err
-		}
-
-		time.Sleep(time.Duration(data.Delay) * time.Millisecond)
-
-		err = client.SendChatPresence(context.Background(), recipient, types.ChatPresence("paused"), types.ChatPresenceMedia(""))
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	response, err := client.SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: messageId})
+	messaged, err := s.SendMessage(instance, msg, "InteractiveMessage", &SendDataStruct{
+		Id:           data.Id,
+		Number:       data.Number,
+		Quoted:       data.Quoted,
+		Delay:        data.Delay,
+		MentionAll:   data.MentionAll,
+		MentionedJID: data.MentionedJID,
+		FormatJid:    data.FormatJid,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	messageInfo := types.MessageInfo{
-		MessageSource: types.MessageSource{
-			Chat:     recipient,
-			Sender:   *client.Store.ID,
-			IsFromMe: true,
-			IsGroup:  false,
-		},
-		ID:        messageId,
-		Timestamp: time.Now(),
-		ServerID:  response.ServerID,
-		Type:      "ButtonMessage",
-	}
-
-	messageSent := &MessageSendStruct{
-		Info:    messageInfo,
-		Message: msg,
-		MessageContextInfo: &waE2E.ContextInfo{
-			StanzaID:      proto.String(data.Quoted.MessageID),
-			Participant:   proto.String(data.Quoted.Participant),
-			QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
-		},
-	}
-
-	return messageSent, nil
+	return messaged, nil
 }
 
 func stringPointer(s string) *string {
@@ -2056,14 +2075,20 @@ func (s *sendService) SendList(data *ListStruct, instance *instance_model.Instan
 		Sections:    sections,
 	}
 
-	// Send as plain ListMessage (NO ViewOnceMessage wrapper) - matching PAPI Node.js
+	// Send as ViewOnceMessage wrapper for better compatibility
 	msg := &waE2E.Message{
-		ListMessage: listMessage,
+		ViewOnceMessage: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{
+				ListMessage: listMessage,
+			},
+		},
 	}
 
 	message, err := s.SendMessage(instance, msg, "ListMessage", &SendDataStruct{
+		Id:     data.Id,
 		Number: data.Number,
 		Delay:  data.Delay,
+		Quoted: data.Quoted,
 	})
 
 	if err != nil {
@@ -2112,53 +2137,61 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 		}
 	}
 
+	// Unwrap message if it's wrapped in ViewOnceMessage for quoting logic
+	m := msg
+	if m.ViewOnceMessage != nil && m.ViewOnceMessage.Message != nil {
+		m = m.ViewOnceMessage.Message
+	} else if m.ViewOnceMessageV2 != nil && m.ViewOnceMessageV2.Message != nil {
+		m = m.ViewOnceMessageV2.Message
+	}
+
 	isMedia := false
 
 	if data.Quoted.MessageID != "" {
 		switch messageType {
 		case "ExtendedTextMessage":
-			msg.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{
+			m.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(data.Quoted.MessageID),
 				Participant:   proto.String(data.Quoted.Participant),
 				QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 			}
 		case "ImageMessage":
-			msg.ImageMessage.ContextInfo = &waE2E.ContextInfo{
+			m.ImageMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(data.Quoted.MessageID),
 				Participant:   proto.String(data.Quoted.Participant),
 				QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 			}
 			isMedia = true
 		case "VideoMessage":
-			msg.VideoMessage.ContextInfo = &waE2E.ContextInfo{
+			m.VideoMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(data.Quoted.MessageID),
 				Participant:   proto.String(data.Quoted.Participant),
 				QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 			}
 			isMedia = true
 		case "PtvMessage":
-			msg.PtvMessage.ContextInfo = &waE2E.ContextInfo{
+			m.PtvMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(data.Quoted.MessageID),
 				Participant:   proto.String(data.Quoted.Participant),
 				QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 			}
 			isMedia = true
 		case "AudioMessage":
-			msg.AudioMessage.ContextInfo = &waE2E.ContextInfo{
+			m.AudioMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(data.Quoted.MessageID),
 				Participant:   proto.String(data.Quoted.Participant),
 				QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 			}
 			isMedia = true
 		case "DocumentMessage":
-			if msg.DocumentMessage != nil {
-				msg.DocumentMessage.ContextInfo = &waE2E.ContextInfo{
+			if m.DocumentMessage != nil {
+				m.DocumentMessage.ContextInfo = &waE2E.ContextInfo{
 					StanzaID:      proto.String(data.Quoted.MessageID),
 					Participant:   proto.String(data.Quoted.Participant),
 					QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 				}
-			} else if msg.DocumentWithCaptionMessage != nil {
-				msg.DocumentWithCaptionMessage.Message.DocumentMessage.ContextInfo = &waE2E.ContextInfo{
+			} else if m.DocumentWithCaptionMessage != nil {
+				m.DocumentWithCaptionMessage.Message.DocumentMessage.ContextInfo = &waE2E.ContextInfo{
 					StanzaID:      proto.String(data.Quoted.MessageID),
 					Participant:   proto.String(data.Quoted.Participant),
 					QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
@@ -2166,41 +2199,41 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 			}
 			isMedia = true
 		case "PollCreationMessage":
-			msg.PollCreationMessage.ContextInfo = &waE2E.ContextInfo{
+			m.PollCreationMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(data.Quoted.MessageID),
 				Participant:   proto.String(data.Quoted.Participant),
 				QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 			}
 		case "StickerMessage":
-			msg.StickerMessage.ContextInfo = &waE2E.ContextInfo{
+			m.StickerMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(data.Quoted.MessageID),
 				Participant:   proto.String(data.Quoted.Participant),
 				QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 			}
 			isMedia = true
 		case "LocationMessage":
-			msg.LocationMessage.ContextInfo = &waE2E.ContextInfo{
+			m.LocationMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(data.Quoted.MessageID),
 				Participant:   proto.String(data.Quoted.Participant),
 				QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 			}
 		case "ContactMessage":
-			msg.ContactMessage.ContextInfo = &waE2E.ContextInfo{
+			m.ContactMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(data.Quoted.MessageID),
 				Participant:   proto.String(data.Quoted.Participant),
 				QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 			}
 		case "InteractiveMessage":
-			if msg.InteractiveMessage != nil {
-				msg.InteractiveMessage.ContextInfo = &waE2E.ContextInfo{
+			if m.InteractiveMessage != nil {
+				m.InteractiveMessage.ContextInfo = &waE2E.ContextInfo{
 					StanzaID:      proto.String(data.Quoted.MessageID),
 					Participant:   proto.String(data.Quoted.Participant),
 					QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 				}
 			}
 		case "ListMessage":
-			if msg.ListMessage != nil {
-				msg.ListMessage.ContextInfo = &waE2E.ContextInfo{
+			if m.ListMessage != nil {
+				m.ListMessage.ContextInfo = &waE2E.ContextInfo{
 					StanzaID:      proto.String(data.Quoted.MessageID),
 					Participant:   proto.String(data.Quoted.Participant),
 					QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
@@ -2718,15 +2751,21 @@ func (s *sendService) SendCarousel(data *CarouselStruct, instance *instance_mode
 
 	// Build final message with MessageContextInfo for proper notification delivery
 	msg := &waE2E.Message{
-		InteractiveMessage: interactiveMsg,
+		ViewOnceMessage: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{
+				InteractiveMessage: interactiveMsg,
+			},
+		},
 		MessageContextInfo: &waE2E.MessageContextInfo{
 			DeviceListMetadata: &waE2E.DeviceListMetadata{},
 		},
 	}
 
 	message, err := s.SendMessage(instance, msg, "InteractiveMessage", &SendDataStruct{
+		Id:     data.Id,
 		Number: data.Number,
 		Delay:  data.Delay,
+		Quoted: data.Quoted,
 	})
 
 	if err != nil {
