@@ -4,6 +4,7 @@ build/
 *.prof
 coverage.*
 .air.toml
+whatsmeow-lib/
 .idea/
 .vscode/
 .DS_Store
