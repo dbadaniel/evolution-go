@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -52,6 +52,7 @@ import (
 	auth_middleware "github.com/EvolutionAPI/evolution-go/pkg/middleware"
 	newsletter_handler "github.com/EvolutionAPI/evolution-go/pkg/newsletter/handler"
 	newsletter_service "github.com/EvolutionAPI/evolution-go/pkg/newsletter/service"
+	passkey_handler "github.com/EvolutionAPI/evolution-go/pkg/passkey/handler"
 	poll_handler "github.com/EvolutionAPI/evolution-go/pkg/poll/handler"
 	routes "github.com/EvolutionAPI/evolution-go/pkg/routes"
 	send_handler "github.com/EvolutionAPI/evolution-go/pkg/sendMessage/handler"
@@ -219,6 +220,7 @@ func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.C
 
 	// License routes (always accessible, even without license)
 	core.LicenseRoutes(r, runtimeCtx)
+	passkey_handler.RegisterRoutes(r, whatsmeowService)
 
 	routes.NewRouter(
 		auth_middleware.NewMiddleware(config, instanceService),

@@ -6,12 +6,12 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"image/png"
 	"io"
 	"math/rand"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -44,6 +44,7 @@ import (
 	logger_wrapper "github.com/EvolutionAPI/evolution-go/pkg/logger"
 	message_model "github.com/EvolutionAPI/evolution-go/pkg/message/model"
 	message_repository "github.com/EvolutionAPI/evolution-go/pkg/message/repository"
+	"github.com/EvolutionAPI/evolution-go/pkg/passkey/ceremony"
 	poll_service "github.com/EvolutionAPI/evolution-go/pkg/poll/service"
 	storage_interfaces "github.com/EvolutionAPI/evolution-go/pkg/storage/interfaces"
 	"github.com/EvolutionAPI/evolution-go/pkg/utils"
@@ -60,6 +61,9 @@ type WhatsmeowService interface {
 	ForceUpdateJid(instanceId string, number string) error
 	UpdateInstanceSettings(instanceId string) error
 	UpdateInstanceAdvancedSettings(instanceId string) error
+	PasskeyCeremonyStore() *ceremony.Store
+	SubmitPasskeyResponse(instanceId string, resp *types.WebAuthnResponse) error
+	ConfirmPasskey(instanceId string) error
 	GetPollService() poll_service.PollService // NOVO: Acesso ao serviço de polls
 }
 
@@ -89,6 +93,7 @@ type whatsmeowService struct {
 	processedMessages  *cache.Cache
 	natsProducer       producer_interfaces.Producer
 	loggerWrapper      *logger_wrapper.LoggerManager
+	passkeyCeremony    *ceremony.Store
 }
 
 type MyClient struct {
@@ -108,6 +113,7 @@ type MyClient struct {
 	labelRepository    label_repository.LabelRepository
 	pollService        poll_service.PollService // NOVO: Serviço de enquetes
 	clientPointer      map[string]*whatsmeow.Client
+	myClientPointer    map[string]*MyClient
 	killChannel        map[string](chan bool)
 	userInfoCache      *cache.Cache
 	config             *config.Config
@@ -120,6 +126,7 @@ type MyClient struct {
 	natsProducer       producer_interfaces.Producer
 	loggerWrapper      *logger_wrapper.LoggerManager
 	qrcodeCount        int
+	passkeyCeremony    *ceremony.Store
 }
 
 type ClientData struct {
@@ -460,6 +467,7 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 		pollService:        w.pollService, // NOVO: Serviço de enquetes
 		userInfoCache:      w.userInfoCache,
 		clientPointer:      w.clientPointer,
+		myClientPointer:    w.myClientPointer,
 		killChannel:        w.killChannel,
 		config:             w.config,
 		historySyncID:      0,
@@ -471,6 +479,7 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 		natsProducer:       w.natsProducer,
 		loggerWrapper:      w.loggerWrapper,
 		qrcodeCount:        0,
+		passkeyCeremony:    w.passkeyCeremony,
 	}
 
 	mycli.eventHandlerID = mycli.WAClient.AddEventHandler(mycli.myEventHandler)
@@ -509,222 +518,32 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 			}
 		}
 	} else {
-		qrChan, err := client.GetQRChannel(context.Background())
+		err = client.Connect()
 		if err != nil {
-			if !errors.Is(err, whatsmeow.ErrQRStoreContainsID) {
-				w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to get QR channel: %v", cd.Instance.Id, err)
-				return
-			}
-		} else {
-			err = client.Connect()
-			if err != nil {
-				if strings.Contains(err.Error(), "EOF") {
-					w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Erro de conexão WebSocket (EOF). Tentando reconectar em 5 segundos...", cd.Instance.Id)
-					time.Sleep(5 * time.Second)
-					err = client.Connect()
-					if err != nil {
-						w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Falha na segunda tentativa de conexão: %v", cd.Instance.Id, err)
-						return
-					}
-				} else if strings.Contains(err.Error(), "username/password authentication failed") {
-					w.loggerWrapper.GetLogger(cd.Instance.Id).LogWarn("[%s] Proxy authentication failed during QR connection, attempting without proxy", cd.Instance.Id)
-
-					// Desabilita o proxy
-					client.SetProxy(nil)
-
-					// Tenta conectar sem proxy
-					err = client.Connect()
-					if err != nil {
-						w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to connect even without proxy: %v", cd.Instance.Id, err)
-						return
-					}
-					w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Successfully connected without proxy", cd.Instance.Id)
-				} else {
-					w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to connect: %v", cd.Instance.Id, err)
+			if strings.Contains(err.Error(), "EOF") {
+				w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] WebSocket connection error (EOF). Retrying in 5 seconds...", cd.Instance.Id)
+				time.Sleep(5 * time.Second)
+				err = client.Connect()
+				if err != nil {
+					w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed on second connection attempt: %v", cd.Instance.Id, err)
 					return
 				}
-			}
+			} else if strings.Contains(err.Error(), "username/password authentication failed") {
+				w.loggerWrapper.GetLogger(cd.Instance.Id).LogWarn("[%s] Proxy authentication failed during QR connection, attempting without proxy", cd.Instance.Id)
 
-			for evt := range qrChan {
-				w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Received QR code event %s", cd.Instance.Id, evt.Event)
-				if evt.Event == "code" {
-					// Incrementar contador de QR codes
-					mycli.qrcodeCount++
+				// Desabilita o proxy
+				client.SetProxy(nil)
 
-					// Log com status do limite
-					if w.config.QrcodeMaxCount > 0 {
-						w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] QR code generated #%d (max: %d)", cd.Instance.Id, mycli.qrcodeCount, w.config.QrcodeMaxCount)
-					} else {
-						w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] QR code generated #%d (limit disabled)", cd.Instance.Id, mycli.qrcodeCount)
-					}
-
-					// Verificar se atingiu o limite máximo (0 = desabilitado)
-					if w.config.QrcodeMaxCount > 0 && mycli.qrcodeCount >= w.config.QrcodeMaxCount {
-						w.loggerWrapper.GetLogger(cd.Instance.Id).LogWarn("[%s] Maximum QR code count reached (%d), forcing logout and QRTimeout", cd.Instance.Id, w.config.QrcodeMaxCount)
-
-						// 1. Forçar logout da instância
-						if mycli.WAClient.IsConnected() {
-							w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Forcing client logout due to QR limit", cd.Instance.Id)
-							err := mycli.WAClient.Logout(context.Background())
-							if err != nil {
-								w.loggerWrapper.GetLogger(cd.Instance.Id).LogWarn("[%s] Error during forced logout: %v", cd.Instance.Id, err)
-							}
-						}
-
-						// 2. Limpar QR code no banco
-						cd.Instance.Qrcode = ""
-						err := w.instanceRepository.UpdateQrcode(cd.Instance.Id, "")
-						if err != nil {
-							w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Error clearing QR code: %v", cd.Instance.Id, err)
-						}
-
-						// 3. Atualizar status da instância como desconectada
-						cd.Instance.Connected = false
-						cd.Instance.DisconnectReason = fmt.Sprintf("QR code limit reached (%d)", w.config.QrcodeMaxCount)
-						err = w.instanceRepository.UpdateConnected(cd.Instance.Id, false, cd.Instance.DisconnectReason)
-						if err != nil {
-							w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Error updating instance status: %v", cd.Instance.Id, err)
-						}
-
-						// 4. Limpar recursos
-						w.loggerWrapper.GetLogger(cd.Instance.Id).LogWarn("[%s] Cleaning up resources due to QR limit", cd.Instance.Id)
-						delete(w.clientPointer, cd.Instance.Id)
-						delete(w.myClientPointer, cd.Instance.Id)
-
-						// 5. Enviar sinal de kill
-						if killChan, exists := w.killChannel[cd.Instance.Id]; exists {
-							select {
-							case killChan <- true:
-								w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Kill signal sent due to QR limit", cd.Instance.Id)
-							default:
-								// Canal pode estar bloqueado
-							}
-							delete(w.killChannel, cd.Instance.Id)
-						}
-
-						// 6. Enviar evento QRTimeout
-						postMap := make(map[string]interface{})
-						postMap["event"] = "QRTimeout"
-						postMap["data"] = map[string]interface{}{
-							"reason":      fmt.Sprintf("Maximum QR code count (%d) reached", w.config.QrcodeMaxCount),
-							"qrcount":     mycli.qrcodeCount,
-							"maxCount":    w.config.QrcodeMaxCount,
-							"forceLogout": true,
-						}
-						postMap["instanceToken"] = mycli.token
-						postMap["instanceId"] = mycli.userID
-						postMap["instanceName"] = cd.Instance.Name
-
-						queueName := strings.ToLower(fmt.Sprintf("%s.%s", cd.Instance.Id, postMap["event"]))
-						values, err := json.Marshal(postMap)
-						if err == nil {
-							go w.CallWebhook(cd.Instance, queueName, values)
-							if mycli.config.AmqpGlobalEnabled || mycli.config.NatsGlobalEnabled {
-								go mycli.service.SendToGlobalQueues(postMap["event"].(string), values, mycli.userID)
-							}
-						}
-
-						w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] QRTimeout event sent due to QR limit enforcement", cd.Instance.Id)
-						return
-					}
-
-					if w.config.LogType != "json" {
-						fmt.Println("QR code:\n", evt.Code)
-					}
-
-					image, _ := qrcode.Encode(evt.Code, qrcode.Medium, 256)
-					base64qrcode := "data:image/png;base64," + base64.StdEncoding.EncodeToString(image)
-
-					base64WithCode := base64qrcode + "|" + evt.Code
-
-					cd.Instance.Qrcode = base64WithCode
-
-					err := w.instanceRepository.UpdateQrcode(cd.Instance.Id, base64WithCode)
-					if err != nil {
-						w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Error updating instance: %s", cd.Instance.Id, err)
-					}
-
-					postMap := make(map[string]interface{})
-
-					postMap["event"] = "QRCode"
-
-					dataMap := make(map[string]interface{})
-
-					dataMap["qrcode"] = base64qrcode
-					dataMap["code"] = evt.Code
-					dataMap["count"] = mycli.qrcodeCount
-					dataMap["maxCount"] = w.config.QrcodeMaxCount
-
-					postMap["data"] = dataMap
-
-					postMap["instanceToken"] = mycli.token
-					postMap["instanceId"] = mycli.userID
-					postMap["instanceName"] = cd.Instance.Name
-
-					var queueName string
-
-					if _, ok := postMap["event"]; ok {
-						queueName = strings.ToLower(fmt.Sprintf("%s.%s", cd.Instance.Id, postMap["event"]))
-					}
-
-					values, err := json.Marshal(postMap)
-					if err != nil {
-						w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to marshal JSON for queue", cd.Instance.Id)
-						return
-					}
-
-					go w.CallWebhook(cd.Instance, queueName, values)
-
-					if mycli.config.AmqpGlobalEnabled || mycli.config.NatsGlobalEnabled {
-						go mycli.service.SendToGlobalQueues(postMap["event"].(string), values, mycli.userID)
-					}
-				} else if evt.Event == "timeout" {
-					cd.Instance.Qrcode = ""
-
-					err := w.instanceRepository.UpdateQrcode(cd.Instance.Id, "")
-					if err != nil {
-						w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Error updating instance: %s", cd.Instance.Id, err)
-					}
-
-					w.loggerWrapper.GetLogger(cd.Instance.Id).LogWarn("[%s] QR timeout killing channel", cd.Instance.Id)
-					delete(w.clientPointer, cd.Instance.Id)
-					delete(w.myClientPointer, cd.Instance.Id)
-					w.killChannel[cd.Instance.Id] <- true
-
-					postMap := make(map[string]interface{})
-
-					postMap["event"] = "QRTimeout"
-
-					dataMap := make(map[string]interface{})
-
-					postMap["data"] = dataMap
-
-					postMap["instanceToken"] = mycli.token
-					postMap["instanceId"] = mycli.userID
-					postMap["instanceName"] = cd.Instance.Name
-
-					var queueName string
-
-					if _, ok := postMap["event"]; ok {
-						queueName = strings.ToLower(fmt.Sprintf("%s.%s", cd.Instance.Id, postMap["event"]))
-					}
-
-					values, err := json.Marshal(postMap)
-					if err != nil {
-						w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to marshal JSON for queue", cd.Instance.Id)
-						return
-					}
-
-					go w.CallWebhook(cd.Instance, queueName, values)
-
-					if mycli.config.AmqpGlobalEnabled || mycli.config.NatsGlobalEnabled {
-						go mycli.service.SendToGlobalQueues(postMap["event"].(string), values, mycli.userID)
-					}
-				} else if evt.Event == "success" {
-					w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] QR pairing ok!", cd.Instance.Id)
-				} else {
-					w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Login event: %s", cd.Instance.Id, evt.Event)
+				// Tenta conectar sem proxy
+				err = client.Connect()
+				if err != nil {
+					w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to connect even without proxy: %v", cd.Instance.Id, err)
+					return
 				}
+				w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Successfully connected without proxy", cd.Instance.Id)
+			} else {
+				w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to connect: %v", cd.Instance.Id, err)
+				return
 			}
 		}
 	}
@@ -844,6 +663,132 @@ func processPresenceUpdates(mycli *MyClient) {
 	}
 }
 
+func (mycli *MyClient) handleQRCodes(codes []string) {
+	go func() {
+		instanceID := mycli.userID
+		for i, code := range codes {
+			if mycli.WAClient == nil || mycli.WAClient.Store.ID != nil {
+				return
+			}
+			if mycli.passkeyCeremony != nil && mycli.passkeyCeremony.HasActiveByInstance(instanceID) {
+				mycli.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] Passkey ceremony in progress; pausing QR rotation and keeping socket alive", instanceID)
+				return
+			}
+
+			mycli.qrcodeCount++
+			if mycli.config.QrcodeMaxCount > 0 {
+				mycli.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] QR code generated #%d (max: %d)", instanceID, mycli.qrcodeCount, mycli.config.QrcodeMaxCount)
+			} else {
+				mycli.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] QR code generated #%d (limit disabled)", instanceID, mycli.qrcodeCount)
+			}
+
+			if mycli.config.QrcodeMaxCount > 0 && mycli.qrcodeCount >= mycli.config.QrcodeMaxCount {
+				if mycli.passkeyCeremony != nil && mycli.passkeyCeremony.HasActiveByInstance(instanceID) {
+					mycli.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] QR max-count reached but passkey ceremony is active; not tearing down", instanceID)
+					return
+				}
+				mycli.loggerWrapper.GetLogger(instanceID).LogWarn("[%s] Maximum QR code count reached (%d), forcing logout and QRTimeout", instanceID, mycli.config.QrcodeMaxCount)
+				if mycli.WAClient.IsConnected() {
+					if err := mycli.WAClient.Logout(context.Background()); err != nil {
+						mycli.loggerWrapper.GetLogger(instanceID).LogWarn("[%s] Error during forced logout: %v", instanceID, err)
+					}
+				}
+				mycli.teardownQR(fmt.Sprintf("Maximum QR code count (%d) reached", mycli.config.QrcodeMaxCount), true)
+				return
+			}
+
+			if mycli.config.LogType != "json" {
+				fmt.Println("QR code:\n", code)
+			}
+
+			image, _ := qrcode.Encode(code, qrcode.Medium, 256)
+			base64qrcode := "data:image/png;base64," + base64.StdEncoding.EncodeToString(image)
+			base64WithCode := base64qrcode + "|" + code
+
+			if err := mycli.instanceRepository.UpdateQrcode(instanceID, base64WithCode); err != nil {
+				mycli.loggerWrapper.GetLogger(instanceID).LogError("[%s] Error updating instance: %s", instanceID, err)
+			}
+
+			postMap := map[string]interface{}{
+				"event": "QRCode",
+				"data": map[string]interface{}{
+					"qrcode":   base64qrcode,
+					"code":     code,
+					"count":    mycli.qrcodeCount,
+					"maxCount": mycli.config.QrcodeMaxCount,
+				},
+				"instanceToken": mycli.token,
+				"instanceId":    instanceID,
+				"instanceName":  mycli.Instance.Name,
+			}
+			queueName := strings.ToLower(fmt.Sprintf("%s.%s", instanceID, "QRCode"))
+			if values, err := json.Marshal(postMap); err == nil {
+				go mycli.service.CallWebhook(mycli.Instance, queueName, values)
+				if mycli.config.AmqpGlobalEnabled || mycli.config.NatsGlobalEnabled {
+					go mycli.service.SendToGlobalQueues("QRCode", values, instanceID)
+				}
+			} else {
+				mycli.loggerWrapper.GetLogger(instanceID).LogError("[%s] Failed to marshal JSON for queue", instanceID)
+			}
+
+			timeout := 20 * time.Second
+			if i == 0 {
+				timeout = 60 * time.Second
+			}
+			time.Sleep(timeout)
+		}
+
+		if mycli.WAClient != nil && mycli.WAClient.Store.ID == nil {
+			if mycli.passkeyCeremony != nil && mycli.passkeyCeremony.HasActiveByInstance(instanceID) {
+				mycli.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] QR codes exhausted but passkey ceremony is active; keeping socket alive", instanceID)
+				return
+			}
+			mycli.teardownQR("", false)
+		}
+	}()
+}
+
+func (mycli *MyClient) teardownQR(reason string, forceLogout bool) {
+	instanceID := mycli.userID
+
+	if err := mycli.instanceRepository.UpdateQrcode(instanceID, ""); err != nil {
+		mycli.loggerWrapper.GetLogger(instanceID).LogError("[%s] Error updating instance: %s", instanceID, err)
+	}
+
+	if reason != "" {
+		if err := mycli.instanceRepository.UpdateConnected(instanceID, false, reason); err != nil {
+			mycli.loggerWrapper.GetLogger(instanceID).LogError("[%s] Error updating instance status: %v", instanceID, err)
+		}
+	}
+
+	data := map[string]interface{}{}
+	if reason != "" {
+		data["reason"] = reason
+		data["qrcount"] = mycli.qrcodeCount
+		data["maxCount"] = mycli.config.QrcodeMaxCount
+		data["forceLogout"] = forceLogout
+	}
+	postMap := map[string]interface{}{
+		"event":         "QRTimeout",
+		"data":          data,
+		"instanceToken": mycli.token,
+		"instanceId":    instanceID,
+		"instanceName":  mycli.Instance.Name,
+	}
+	queueName := strings.ToLower(fmt.Sprintf("%s.%s", instanceID, "QRTimeout"))
+	if values, err := json.Marshal(postMap); err == nil {
+		go mycli.service.CallWebhook(mycli.Instance, queueName, values)
+		if mycli.config.AmqpGlobalEnabled || mycli.config.NatsGlobalEnabled {
+			go mycli.service.SendToGlobalQueues("QRTimeout", values, instanceID)
+		}
+	}
+
+	mycli.loggerWrapper.GetLogger(instanceID).LogWarn("[%s] QR timeout; signaling kill channel", instanceID)
+	if killChan, exists := mycli.killChannel[instanceID]; exists {
+		killChan <- true
+	}
+}
+
 func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	userID := mycli.userID
 	postMap := make(map[string]interface{})
@@ -851,6 +796,9 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	doWebhook := false
 
 	switch evt := rawEvt.(type) {
+	case *events.QR:
+		mycli.handleQRCodes(evt.Codes)
+		return
 	case *events.AppStateSyncComplete:
 		if len(mycli.WAClient.Store.PushName) > 0 && evt.Name == appstate.WAPatchCriticalBlock {
 			err := mycli.WAClient.SendPresence(context.Background(), types.PresenceUnavailable)
@@ -994,6 +942,65 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		}
 
 		postMap["data"] = dataMap
+		if mycli.passkeyCeremony != nil {
+			mycli.passkeyCeremony.Clear(mycli.userID)
+		}
+	case *events.PairPasskeyRequest:
+		doWebhook = true
+		postMap["event"] = "PasskeyRequest"
+		if mycli.passkeyCeremony == nil {
+			mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Passkey ceremony store is unavailable", mycli.userID)
+			return
+		}
+
+		pkJSON, err := json.Marshal(evt.PublicKey)
+		if err != nil {
+			mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to marshal passkey publicKey: %v", mycli.userID, err)
+			mycli.passkeyCeremony.SetError(mycli.userID, "failed to encode passkey challenge")
+			return
+		}
+
+		token := mycli.passkeyCeremony.Start(mycli.userID, pkJSON)
+		publicBase := os.Getenv("PASSKEY_PUBLIC_URL")
+		if publicBase == "" {
+			publicBase = "<SET_PASSKEY_PUBLIC_URL>"
+		}
+		payload := fmt.Sprintf(`{"t":%q,"b":%q}`, token, publicBase)
+		wapk := base64.RawURLEncoding.EncodeToString([]byte(payload))
+		openURL := "https://web.whatsapp.com/#wapk=" + wapk
+
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Passkey required. Open this URL in a browser with the Evolution Passkey Helper extension: %s", mycli.userID, openURL)
+		postMap["data"] = map[string]interface{}{
+			"ceremonyToken": token,
+			"openUrl":       openURL,
+			"stage":         "challenge",
+		}
+	case *events.PairPasskeyConfirmation:
+		doWebhook = true
+		postMap["event"] = "PasskeyConfirmation"
+		if mycli.passkeyCeremony != nil {
+			mycli.passkeyCeremony.SetConfirmation(mycli.userID, evt.Code, false)
+		}
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Passkey confirmation code=%s (skipHandoffUX from server=%v, forced to manual)", mycli.userID, evt.Code, evt.SkipHandoffUX)
+		postMap["data"] = map[string]interface{}{
+			"code":  evt.Code,
+			"stage": "confirmation",
+		}
+	case *events.PairPasskeyError:
+		doWebhook = true
+		postMap["event"] = "PasskeyError"
+		msg := "unknown passkey error"
+		if evt.Error != nil {
+			msg = evt.Error.Error()
+		}
+		if mycli.passkeyCeremony != nil {
+			mycli.passkeyCeremony.SetError(mycli.userID, msg)
+		}
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Passkey pairing error (continuation=%v): %s", mycli.userID, evt.Continuation, msg)
+		postMap["data"] = map[string]interface{}{
+			"error": msg,
+			"stage": "error",
+		}
 	case *events.StreamReplaced:
 		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Received StreamReplaced event", mycli.userID)
 		return
@@ -1577,17 +1584,17 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			buttonClickMap := map[string]interface{}{
 				"event": "ButtonClick",
 				"data": map[string]interface{}{
-					"buttonId":     buttonClickData["buttonId"],
-					"buttonText":   buttonClickData["buttonText"],
-					"type":         buttonClickData["type"],
-					"phone":        dataMap["Sender"],
-					"jid":          dataMap["Sender"],
-					"pushName":     dataMap["PushName"],
-					"messageId":    dataMap["ID"],
-					"chat":         dataMap["Chat"],
-					"fromMe":       dataMap["FromMe"],
-					"timestamp":    evt.Info.Timestamp.Unix(),
-					"extraData":    buttonClickData,
+					"buttonId":   buttonClickData["buttonId"],
+					"buttonText": buttonClickData["buttonText"],
+					"type":       buttonClickData["type"],
+					"phone":      dataMap["Sender"],
+					"jid":        dataMap["Sender"],
+					"pushName":   dataMap["PushName"],
+					"messageId":  dataMap["ID"],
+					"chat":       dataMap["Chat"],
+					"fromMe":     dataMap["FromMe"],
+					"timestamp":  evt.Info.Timestamp.Unix(),
+					"extraData":  buttonClickData,
 				},
 				"instanceToken": mycli.token,
 				"instanceId":    mycli.userID,
@@ -2686,12 +2693,57 @@ func NewWhatsmeowService(
 		processedMessages:  cache.New(30*time.Minute, 1*time.Hour),
 		natsProducer:       natsProducer,
 		loggerWrapper:      loggerWrapper,
+		passkeyCeremony:    ceremony.NewStore(),
 	}
 }
 
 // GetPollService retorna o serviço de polls (evita dupla inicialização)
 func (w *whatsmeowService) GetPollService() poll_service.PollService {
 	return w.pollService
+}
+
+func (w *whatsmeowService) PasskeyCeremonyStore() *ceremony.Store {
+	return w.passkeyCeremony
+}
+
+func (w *whatsmeowService) SubmitPasskeyResponse(instanceId string, resp *types.WebAuthnResponse) error {
+	client, ok := w.clientPointer[instanceId]
+	if !ok || client == nil {
+		return fmt.Errorf("no active client for instance %s", instanceId)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if err := client.SendPasskeyResponse(ctx, resp); err != nil {
+		if w.passkeyCeremony != nil {
+			w.passkeyCeremony.SetError(instanceId, err.Error())
+		}
+		return err
+	}
+	if w.passkeyCeremony != nil {
+		w.passkeyCeremony.SetAwaitingConfirmation(instanceId)
+	}
+	return nil
+}
+
+func (w *whatsmeowService) ConfirmPasskey(instanceId string) error {
+	client, ok := w.clientPointer[instanceId]
+	if !ok || client == nil {
+		return fmt.Errorf("no active client for instance %s", instanceId)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if err := client.SendPasskeyConfirmation(ctx); err != nil {
+		if w.passkeyCeremony != nil {
+			w.passkeyCeremony.SetError(instanceId, err.Error())
+		}
+		return err
+	}
+	if w.passkeyCeremony != nil {
+		w.passkeyCeremony.SetConfirmed(instanceId)
+	}
+	return nil
 }
 
 // cleanSenderID remove a parte ":numero" do sender ID para exibir apenas o remoteJid correto

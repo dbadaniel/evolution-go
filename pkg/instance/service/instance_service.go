@@ -3,6 +3,7 @@ package instance_service
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,8 +90,11 @@ type StatusStruct struct {
 }
 
 type QrcodeStruct struct {
-	Qrcode string
-	Code   string
+	Qrcode         string `json:"qrcode"`
+	Code           string `json:"code"`
+	PasskeyStage   string `json:"passkeyStage,omitempty"`
+	PasskeyOpenURL string `json:"passkeyOpenUrl,omitempty"`
+	PasskeyCode    string `json:"passkeyCode,omitempty"`
 }
 
 type PairStruct struct {
@@ -376,11 +380,14 @@ func (i instances) Logout(instance *instance_model.Instance) (*instance_model.In
 }
 
 func (i instances) Status(instance *instance_model.Instance) (*StatusStruct, error) {
-	client, err := i.ensureClientConnected(instance.Id)
-	if err != nil {
-		return nil, err
+	client := i.clientPointer[instance.Id]
+	if client == nil {
+		return &StatusStruct{
+			Connected: false,
+			LoggedIn:  false,
+			Name:      instance.Name,
+		}, nil
 	}
-
 	isConnected := client.IsConnected()
 	isLoggedIn := client.IsLoggedIn()
 
@@ -440,6 +447,16 @@ func (i instances) GetQr(instance *instance_model.Instance) (*QrcodeStruct, erro
 		return nil, err
 	}
 
+	if store := i.whatsmeowService.PasskeyCeremonyStore(); store != nil {
+		if token, state, ok := store.StateByInstance(instance.Id); ok {
+			return &QrcodeStruct{
+				PasskeyStage:   state.Stage,
+				PasskeyOpenURL: buildPasskeyOpenURL(token),
+				PasskeyCode:    state.Code,
+			}, nil
+		}
+	}
+
 	code := instance.Qrcode
 	if code == "" {
 		// Se não há QR code ainda, aguardar um pouco mais e tentar novamente
@@ -470,10 +487,38 @@ func (i instances) GetQr(instance *instance_model.Instance) (*QrcodeStruct, erro
 	return qr, nil
 }
 
+func buildPasskeyOpenURL(token string) string {
+	publicBase := os.Getenv("PASSKEY_PUBLIC_URL")
+	if publicBase == "" {
+		publicBase = "<SET_PASSKEY_PUBLIC_URL>"
+	}
+	payload := fmt.Sprintf(`{"t":%q,"b":%q}`, token, publicBase)
+	wapk := base64.RawURLEncoding.EncodeToString([]byte(payload))
+	return "https://web.whatsapp.com/#wapk=" + wapk
+}
+
 func (i instances) Pair(data *PairStruct, instance *instance_model.Instance) (*PairReturnStruct, error) {
-	code, err := i.clientPointer[instance.Id].PairPhone(context.Background(), data.Phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+	if strings.TrimSpace(data.Phone) == "" {
+		return nil, fmt.Errorf("phone is required")
+	}
+
+	client := i.clientPointer[instance.Id]
+	if client == nil {
+		if err := i.whatsmeowService.StartInstance(instance.Id); err != nil {
+			i.loggerWrapper.GetLogger(instance.Id).LogError("[%s] failed to start instance before pairing: %v", instance.Id, err)
+			return nil, err
+		}
+		time.Sleep(2 * time.Second)
+		client = i.clientPointer[instance.Id]
+	}
+	if client == nil {
+		return nil, fmt.Errorf("no active client for instance %s", instance.Id)
+	}
+
+	code, err := client.PairPhone(context.Background(), data.Phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
 	if err != nil {
 		i.loggerWrapper.GetLogger(instance.Id).LogError("[%s] something went wrong calling pair phone", instance.Id)
+		return nil, err
 	}
 
 	return &PairReturnStruct{PairingCode: code}, nil
