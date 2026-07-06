@@ -2217,20 +2217,48 @@ func (s *sendService) SendList(data *ListStruct, instance *instance_model.Instan
 		Sections:    sections,
 	}
 
-	// Send as ViewOnceMessage wrapper for better compatibility
+	listMsgSecret := make([]byte, 32)
+	_, _ = cryptoRand.Read(listMsgSecret)
+
 	msg := &waE2E.Message{
-		ViewOnceMessage: &waE2E.FutureProofMessage{
+		DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
 			Message: &waE2E.Message{
 				ListMessage: listMessage,
 			},
 		},
+		MessageContextInfo: &waE2E.MessageContextInfo{
+			MessageSecret: listMsgSecret,
+		},
+	}
+
+	listBizNodes := []waBinary.Node{
+		{
+			Tag: "biz",
+			Content: []waBinary.Node{{
+				Tag: "list",
+				Attrs: waBinary.Attrs{
+					"v":    "2",
+					"type": "single_select",
+				},
+			}},
+		},
+	}
+	if !strings.Contains(data.Number, "@g.us") {
+		listBizNodes = append(listBizNodes, waBinary.Node{
+			Tag:   "bot",
+			Attrs: waBinary.Attrs{"biz_bot": "1"},
+		})
 	}
 
 	message, err := s.SendMessage(instance, msg, "ListMessage", &SendDataStruct{
-		Id:     data.Id,
-		Number: data.Number,
-		Delay:  data.Delay,
-		Quoted: data.Quoted,
+		Id:              data.Id,
+		Number:          data.Number,
+		Delay:           data.Delay,
+		MentionAll:      data.MentionAll,
+		MentionedJID:    data.MentionedJID,
+		FormatJid:       data.FormatJid,
+		Quoted:          data.Quoted,
+		AdditionalNodes: &listBizNodes,
 	})
 
 	if err != nil {
@@ -2384,6 +2412,14 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 		case "ListMessage":
 			if m.ListMessage != nil {
 				m.ListMessage.ContextInfo = &waE2E.ContextInfo{
+					StanzaID:      proto.String(data.Quoted.MessageID),
+					Participant:   proto.String(data.Quoted.Participant),
+					QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
+				}
+			} else if msg.DocumentWithCaptionMessage != nil &&
+				msg.DocumentWithCaptionMessage.Message != nil &&
+				msg.DocumentWithCaptionMessage.Message.ListMessage != nil {
+				msg.DocumentWithCaptionMessage.Message.ListMessage.ContextInfo = &waE2E.ContextInfo{
 					StanzaID:      proto.String(data.Quoted.MessageID),
 					Participant:   proto.String(data.Quoted.Participant),
 					QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
