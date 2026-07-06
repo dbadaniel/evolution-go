@@ -33,6 +33,7 @@ import (
 	"github.com/chai2010/webp"
 	"github.com/gabriel-vasile/mimetype"
 	"go.mau.fi/whatsmeow"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	xdraw "golang.org/x/image/draw"
@@ -65,14 +66,15 @@ type sendService struct {
 }
 
 type SendDataStruct struct {
-	Id           string
-	Number       string
-	Delay        int32
-	MentionAll   bool
-	MentionedJID []string
-	FormatJid    *bool
-	Quoted       QuotedStruct
-	MediaHandle  string
+	Id              string
+	Number          string
+	Delay           int32
+	MentionAll      bool
+	MentionedJID    []string
+	FormatJid       *bool
+	Quoted          QuotedStruct
+	MediaHandle     string
+	AdditionalNodes *[]waBinary.Node
 }
 
 type QuotedStruct struct {
@@ -2420,6 +2422,10 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 	if recipient.Server == "newsletter" && data.MediaHandle != "" {
 		sendExtra.MediaHandle = data.MediaHandle
 		s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Newsletter detected, using MediaHandle: %s", instance.Id, data.MediaHandle)
+	}
+
+	if data.AdditionalNodes != nil {
+		sendExtra.AdditionalNodes = data.AdditionalNodes
 	}
 
 	response, err := s.clientPointer[instance.Id].SendMessage(context.Background(), recipient, msg, sendExtra)
