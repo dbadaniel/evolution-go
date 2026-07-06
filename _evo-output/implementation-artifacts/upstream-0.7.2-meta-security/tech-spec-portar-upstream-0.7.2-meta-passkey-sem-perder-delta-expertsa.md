@@ -53,11 +53,11 @@ context: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `docs/fork-delta.md` -- criar inventario inicial de deltas -- manter claro o que e upstream e o que e nosso.
-- [ ] `go.mod`, `go.sum`, `.gitmodules`, `whatsmeow-lib` -- portar dependencia oficial do `whatsmeow` sem renomear module path local -- habilitar passkey mantendo minimo blast radius.
-- [ ] `pkg/passkey/**`, `passkey-helper/**`, `.env.example` -- adicionar fluxo de cerimonia e helper -- suportar contas bloqueadas por passkey.
-- [ ] `pkg/whatsmeow/service/whatsmeow.go` -- portar QR/event/passkey core com imports locais -- manter socket vivo durante passkey e evitar concorrencia em maps.
-- [ ] `cmd/evolution-go/main.go`, `pkg/instance/service/instance_service.go` -- registrar rotas e portar pair/status/passkey QR info -- expor o fluxo ao manager/API.
+- [x] `docs/fork-delta.md` -- criar inventario inicial de deltas -- manter claro o que e upstream e o que e nosso.
+- [x] `go.mod`, `go.sum`, `.gitmodules`, `whatsmeow-lib` -- portar dependencia oficial do `whatsmeow` sem renomear module path local -- habilitar passkey mantendo minimo blast radius.
+- [x] `pkg/passkey/**`, `passkey-helper/**`, `.env.example` -- adicionar fluxo de cerimonia e helper -- suportar contas bloqueadas por passkey.
+- [x] `pkg/whatsmeow/service/whatsmeow.go` -- portar QR/event/passkey core com imports locais -- manter socket vivo durante passkey e evitar concorrencia em maps.
+- [x] `cmd/evolution-go/main.go`, `pkg/instance/service/instance_service.go` -- registrar rotas e portar pair/status/passkey QR info -- expor o fluxo ao manager/API.
 - [ ] `pkg/sendMessage/service/send_service.go` -- reconciliar o WIP com a abordagem 0.7.2 para mensagens interativas -- evitar regressao em botoes/listas/carrossel.
 - [ ] Executar build/testes possiveis -- confirmar compilacao e unidade basica.
 
@@ -77,10 +77,11 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
 ## Verification
 
 **Commands:**
-- `go test ./pkg/passkey/... ./pkg/instance/... ./pkg/whatsmeow/service/...` -- expected: pass or identify integration compile failures.
+- `go test ./pkg/whatsmeow/service ./pkg/instance/service ./pkg/passkey/ceremony ./pkg/passkey/handler` -- passed on 2026-07-06.
+- `go test ./...` -- currently blocked outside touched packages by `github.com/chai2010/webp` build errors (`undefined: webpGetInfo`, etc.).
 - `go test ./pkg/sendMessage/service/...` -- expected: pass after reconciling interactive messages.
 - `go build ./cmd/evolution-go` -- expected: compile succeeds with official whatsmeow dependency.
-- `git diff --check` -- expected: no whitespace/errors in touched non-generated files.
+- `git diff --check` -- passed on 2026-07-06.
 
 **Manual checks (if no CLI):**
 - Review QR normal, passkey-required pairing, pair-phone error handling, and button/list/carousel payload shape before release.
