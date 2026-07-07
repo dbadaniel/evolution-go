@@ -107,4 +107,4 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
   rendering investigation because the visual button was not delivered to the
   recipient app.
 - 2026-07-07: `/send/list` initial smoke with `single_select` did not render;
-  next retry should validate the restored `product_list` transport node.
+  after restoring the `product_list` transport node, the manual smoke test passed.
