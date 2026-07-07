@@ -2046,17 +2046,8 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 		}
 	}
 
-	var bizNodes []waBinary.Node
-	if hasReply && !hasOtherTypes && !hasPix {
-		bizNodes = []waBinary.Node{
-			{
-				Tag: "biz",
-				Content: []waBinary.Node{{
-					Tag: "buttons",
-				}},
-			},
-		}
-	} else {
+	var additionalNodes *[]waBinary.Node
+	if !hasReply || hasOtherTypes || hasPix {
 		var nativeFlowName string
 		switch {
 		case hasPix:
@@ -2065,7 +2056,7 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 			nativeFlowName = "mixed"
 		}
 
-		bizNodes = []waBinary.Node{
+		bizNodes := []waBinary.Node{
 			{
 				Tag: "biz",
 				Content: []waBinary.Node{{
@@ -2083,12 +2074,13 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 				}},
 			},
 		}
-	}
-	if !strings.Contains(data.Number, "@g.us") {
-		bizNodes = append(bizNodes, waBinary.Node{
-			Tag:   "bot",
-			Attrs: waBinary.Attrs{"biz_bot": "1"},
-		})
+		if !strings.Contains(data.Number, "@g.us") {
+			bizNodes = append(bizNodes, waBinary.Node{
+				Tag:   "bot",
+				Attrs: waBinary.Attrs{"biz_bot": "1"},
+			})
+		}
+		additionalNodes = &bizNodes
 	}
 
 	messaged, err := s.SendMessage(instance, msg, msgType, &SendDataStruct{
@@ -2099,7 +2091,7 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 		MentionAll:      data.MentionAll,
 		MentionedJID:    data.MentionedJID,
 		FormatJid:       data.FormatJid,
-		AdditionalNodes: &bizNodes,
+		AdditionalNodes: additionalNodes,
 	})
 	if err != nil {
 		return nil, err
