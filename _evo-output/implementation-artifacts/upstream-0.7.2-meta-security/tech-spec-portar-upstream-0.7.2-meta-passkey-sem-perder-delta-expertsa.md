@@ -105,6 +105,10 @@ context: []
   valida, o payload nao declara mais `mediaType=IMAGE` nem envia
   `ThumbnailURL`/`OriginalImageURL`, evitando placeholder visual quebrado. Links
   com thumbnail valida continuam usando imagem.
+- 2026-07-07: Ampliado fallback de imagem do `/send/link` para paginas modernas
+  sem `og:image`: agora tambem busca imagens em JSON-LD, `link rel=preload`
+  com `as=image`, `img src` e `srcset`, evitando escolher URLs de pagina como
+  se fossem imagem.
 
 ## Design Notes
 
@@ -135,4 +139,6 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
   posteriores nao exibiram linha de thumbnail; parser/logs de metadata foram
   ampliados para confirmar se o container esta encontrando `imgUrl`. Smoke
   mostrou placeholder de link quando a thumbnail nao veio; fallback ajustado para
-  nao declarar imagem sem bytes de thumbnail.
+  nao declarar imagem sem bytes de thumbnail. Retorno da API confirmou
+  `previewType=4`, `mediaType=0` e ausencia de `JPEGThumbnail` para o subdominio;
+  fallback de extracao de imagem foi ampliado.

@@ -627,18 +627,53 @@ func fetchLinkMetadata(targetUrl string) (string, string, string, error) {
 				}
 			}
 			if n.Data == "link" && imgURL == "" {
-				var rel, href string
+				var rel, as, href string
 				for _, attr := range n.Attr {
 					key := strings.ToLower(strings.TrimSpace(attr.Key))
 					val := strings.TrimSpace(attr.Val)
 					if key == "rel" {
 						rel = strings.ToLower(val)
+					} else if key == "as" {
+						as = strings.ToLower(val)
 					} else if key == "href" {
 						href = val
 					}
 				}
-				if rel == "image_src" && href != "" {
+				if (strings.Contains(rel, "image_src") ||
+					(strings.Contains(rel, "preload") && as == "image")) &&
+					isUsablePreviewImageURL(href) {
 					imgURL = href
+				}
+			}
+			if n.Data == "img" && imgURL == "" {
+				var src, srcset string
+				for _, attr := range n.Attr {
+					key := strings.ToLower(strings.TrimSpace(attr.Key))
+					val := strings.TrimSpace(attr.Val)
+					if (key == "src" || key == "data-src" || key == "data-lazy-src") && src == "" {
+						src = val
+					} else if (key == "srcset" || key == "data-srcset" || key == "data-lazy-srcset") && srcset == "" {
+						srcset = val
+					}
+				}
+				if srcsetURL := firstSrcsetURL(srcset); srcsetURL != "" {
+					imgURL = srcsetURL
+				} else if isUsablePreviewImageURL(src) {
+					imgURL = src
+				}
+			}
+			if n.Data == "script" && imgURL == "" {
+				var scriptType string
+				for _, attr := range n.Attr {
+					if strings.ToLower(strings.TrimSpace(attr.Key)) == "type" {
+						scriptType = strings.ToLower(strings.TrimSpace(attr.Val))
+					}
+				}
+				if strings.Contains(scriptType, "ld+json") {
+					var payload interface{}
+					if err := json.Unmarshal([]byte(strings.TrimSpace(nodeText(n))), &payload); err == nil {
+						imgURL = findJSONLDImage(payload)
+					}
 				}
 			}
 		}
@@ -660,6 +695,109 @@ func fetchLinkMetadata(targetUrl string) (string, string, string, error) {
 	}
 
 	return strings.TrimSpace(title), strings.TrimSpace(description), imgURL, nil
+}
+
+func findJSONLDImage(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		if isUsablePreviewImageURL(v) {
+			return strings.TrimSpace(v)
+		}
+	case []interface{}:
+		for _, item := range v {
+			if imageURL := findJSONLDImage(item); imageURL != "" {
+				return imageURL
+			}
+		}
+	case map[string]interface{}:
+		for _, key := range []string{"image", "thumbnailUrl", "thumbnail", "primaryImageOfPage"} {
+			if imageURL := findJSONLDImage(v[key]); imageURL != "" {
+				return imageURL
+			}
+		}
+		if jsonLDMapLooksLikeImage(v) {
+			for _, key := range []string{"url", "contentUrl"} {
+				if imageURL := findJSONLDImage(v[key]); imageURL != "" {
+					return imageURL
+				}
+			}
+		}
+		for _, item := range v {
+			switch item.(type) {
+			case []interface{}, map[string]interface{}:
+				if imageURL := findJSONLDImage(item); imageURL != "" {
+					return imageURL
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+func jsonLDMapLooksLikeImage(value map[string]interface{}) bool {
+	for _, key := range []string{"contentUrl", "thumbnailUrl"} {
+		if _, ok := value[key]; ok {
+			return true
+		}
+	}
+
+	rawType, ok := value["@type"]
+	if !ok {
+		return false
+	}
+	switch typed := rawType.(type) {
+	case string:
+		return strings.Contains(strings.ToLower(typed), "image")
+	case []interface{}:
+		for _, item := range typed {
+			if typeName, ok := item.(string); ok && strings.Contains(strings.ToLower(typeName), "image") {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func nodeText(n *html.Node) string {
+	if n == nil {
+		return ""
+	}
+	if n.Type == html.TextNode {
+		return n.Data
+	}
+
+	var builder strings.Builder
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		builder.WriteString(nodeText(child))
+	}
+	return builder.String()
+}
+
+func firstSrcsetURL(srcset string) string {
+	var selected string
+	for _, candidate := range strings.Split(srcset, ",") {
+		fields := strings.Fields(strings.TrimSpace(candidate))
+		if len(fields) > 0 && isUsablePreviewImageURL(fields[0]) {
+			selected = fields[0]
+		}
+	}
+	return selected
+}
+
+func isUsablePreviewImageURL(imageURL string) bool {
+	imageURL = strings.TrimSpace(imageURL)
+	lowerURL := strings.ToLower(imageURL)
+	if imageURL == "" ||
+		strings.HasPrefix(lowerURL, "data:") ||
+		strings.HasPrefix(lowerURL, "blob:") ||
+		strings.Contains(lowerURL, "favicon") ||
+		strings.Contains(lowerURL, "apple-touch-icon") ||
+		strings.HasSuffix(lowerURL, ".svg") {
+		return false
+	}
+	return true
 }
 
 func (s *sendService) resizeThumbnail(data []byte, maxDim int) []byte {
