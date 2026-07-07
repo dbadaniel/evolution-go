@@ -595,14 +595,18 @@ func fetchLinkMetadata(targetUrl string) (string, string, string, error) {
 				title = n.FirstChild.Data
 			}
 			if n.Data == "meta" {
-				var property, name, content string
+				var property, name, itemprop, content string
 				for _, attr := range n.Attr {
-					if attr.Key == "property" {
-						property = attr.Val
-					} else if attr.Key == "name" {
-						name = attr.Val
-					} else if attr.Key == "content" {
-						content = attr.Val
+					key := strings.ToLower(strings.TrimSpace(attr.Key))
+					val := strings.TrimSpace(attr.Val)
+					if key == "property" {
+						property = strings.ToLower(val)
+					} else if key == "name" {
+						name = strings.ToLower(val)
+					} else if key == "itemprop" {
+						itemprop = strings.ToLower(val)
+					} else if key == "content" {
+						content = val
 					}
 				}
 
@@ -613,8 +617,28 @@ func fetchLinkMetadata(targetUrl string) (string, string, string, error) {
 				if (property == "og:description" || name == "description") && description == "" {
 					description = content
 				}
-				if (property == "og:image" || name == "twitter:image") && imgURL == "" {
+				if (property == "og:image" ||
+					property == "og:image:url" ||
+					property == "og:image:secure_url" ||
+					name == "twitter:image" ||
+					name == "twitter:image:src" ||
+					itemprop == "image") && imgURL == "" {
 					imgURL = content
+				}
+			}
+			if n.Data == "link" && imgURL == "" {
+				var rel, href string
+				for _, attr := range n.Attr {
+					key := strings.ToLower(strings.TrimSpace(attr.Key))
+					val := strings.TrimSpace(attr.Val)
+					if key == "rel" {
+						rel = strings.ToLower(val)
+					} else if key == "href" {
+						href = val
+					}
+				}
+				if rel == "image_src" && href != "" {
+					imgURL = href
 				}
 			}
 		}
@@ -805,6 +829,7 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 					if data.ImgUrl == "" {
 						data.ImgUrl = imgUrl
 					}
+					s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Link metadata fetched: url=%s title=%q descriptionLen=%d imgUrl=%q", instance.Id, matchedText, data.Title, len(data.Description), data.ImgUrl)
 				} else {
 					s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Failed to fetch link metadata for %s: %v", instance.Id, matchedText, err)
 				}
@@ -814,6 +839,7 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 		var fileData []byte
 		var thumbnailWidth, thumbnailHeight uint32
 		if data.ImgUrl != "" {
+			s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Downloading link preview image: %s", instance.Id, data.ImgUrl)
 			// Download da imagem da miniatura com User-Agent para evitar bloqueios em produção
 			imgReq, err := http.NewRequest("GET", data.ImgUrl, nil)
 			if err == nil {
@@ -825,6 +851,7 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 				if err == nil && imgResp.StatusCode == http.StatusOK {
 					defer imgResp.Body.Close()
 					rawImageData, _ := io.ReadAll(imgResp.Body)
+					s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Link preview image downloaded: contentType=%q bytes=%d", instance.Id, imgResp.Header.Get("Content-Type"), len(rawImageData))
 					fileData, thumbnailWidth, thumbnailHeight = s.buildLinkPreviewThumbnail(rawImageData, 600)
 					if fileData == nil {
 						s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Link preview image ignored because it could not be converted to JPEG thumbnail: %s", instance.Id, data.ImgUrl)
@@ -834,7 +861,11 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 				} else {
 					s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Failed to download link preview image: status %d", instance.Id, imgResp.StatusCode)
 				}
+			} else {
+				s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Invalid link preview image URL %q: %v", instance.Id, data.ImgUrl, err)
 			}
+		} else {
+			s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Link preview image URL is empty after metadata fetch for %s", instance.Id, matchedText)
 		}
 
 		mediaType := waE2E.ContextInfo_ExternalAdReplyInfo_IMAGE

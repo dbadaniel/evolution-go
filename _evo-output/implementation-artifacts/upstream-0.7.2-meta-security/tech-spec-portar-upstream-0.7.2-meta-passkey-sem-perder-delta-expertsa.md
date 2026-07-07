@@ -97,6 +97,10 @@ context: []
   preta no lugar da imagem: imagens com alfa/transparencia agora sao achatadas
   sobre fundo branco antes de virar JPEG, e `RenderLargerThumbnail` so fica ativo
   quando ha thumbnail valida.
+- 2026-07-07: Adicionado diagnostico detalhado para `/send/link` e ampliada a
+  leitura de metadata (`og:image:secure_url`, `og:image:url`,
+  `twitter:image:src`, `itemprop=image`, `link rel=image_src`) para diferenciar
+  falta de `imgUrl`, falha de download e falha de conversao de thumbnail.
 
 ## Design Notes
 
@@ -123,4 +127,6 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
   no app; patches aplicados para normalizar thumbnail JPEG e preservar
   `ContextInfo.ExternalAdReply` durante `SendMessage`. Requer rebuild e novo
   smoke test no Docker. Smoke seguinte mostrou card com area preta no thumbnail;
-  patch adicional aplicado para compor transparencias em fundo branco.
+  patch adicional aplicado para compor transparencias em fundo branco. Logs
+  posteriores nao exibiram linha de thumbnail; parser/logs de metadata foram
+  ampliados para confirmar se o container esta encontrando `imgUrl`.
