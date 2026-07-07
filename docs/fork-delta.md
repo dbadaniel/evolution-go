@@ -51,6 +51,10 @@ Ported from upstream `0.7.2`:
   `id` and `copy_code`.
 - Quoted-message support recognizes nested interactive/list/buttons payloads
   inside `DocumentWithCaptionMessage`.
+- List sends preserve the old Expertsa/`whatsmeow-lib` compatibility tweak:
+  the injected `biz/list` node uses `type=product_list` even though the protobuf
+  remains a single-select `ListMessage`. This mirrors the
+  `marcelotadeujr/whatsmeow` fork discussion around list rendering.
 
 Preserved from Expertsa:
 
@@ -60,6 +64,8 @@ Preserved from Expertsa:
 - Existing link metadata handling remains richer than upstream for timeout,
   user-agent, OpenGraph priority, and relative image URL resolution.
 - Existing local thumbnail resize path remains in place.
+- The legacy `product_list` transport-node behavior for lists is preserved from
+  the pre-official-`whatsmeow` fork delta.
 
 Deferred for a separate decision:
 

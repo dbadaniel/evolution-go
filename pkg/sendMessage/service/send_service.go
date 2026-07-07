@@ -2249,7 +2249,7 @@ func (s *sendService) SendList(data *ListStruct, instance *instance_model.Instan
 				Tag: "list",
 				Attrs: waBinary.Attrs{
 					"v":    "2",
-					"type": "single_select",
+					"type": "product_list",
 				},
 			}},
 		},

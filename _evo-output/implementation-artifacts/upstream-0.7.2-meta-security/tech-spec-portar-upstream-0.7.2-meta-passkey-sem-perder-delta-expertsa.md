@@ -83,6 +83,9 @@ context: []
   botao no WhatsApp ainda nao ocorreu, mas foi classificada como pendencia ja
   existente na versao anterior, nao regressao nova desta integracao. Carrossel
   foi validado como funcional.
+- 2026-07-07: Restaurado o delta local antigo de lista: o node `biz/list` usa
+  `type=product_list`, alinhado ao changelog v0.7.0 e ao fork
+  `marcelotadeujr/whatsmeow`, em vez de `type=single_select` do upstream puro.
 
 ## Design Notes
 
@@ -103,3 +106,5 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
   returns success/receipt/webhook as `ButtonsMessage`, but still needs a separate
   rendering investigation because the visual button was not delivered to the
   recipient app.
+- 2026-07-07: `/send/list` initial smoke with `single_select` did not render;
+  next retry should validate the restored `product_list` transport node.
