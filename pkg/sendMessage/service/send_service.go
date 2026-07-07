@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"image/draw"
 
 	"image/jpeg"
@@ -688,33 +689,41 @@ func (s *sendService) buildLinkPreviewThumbnail(data []byte, maxDim int) ([]byte
 		return nil, 0, 0
 	}
 
-	thumbnail := s.resizeThumbnail(data, maxDim)
-	if len(thumbnail) == 0 {
-		return nil, 0, 0
-	}
-
-	img, format, err := image.Decode(bytes.NewReader(thumbnail))
+	src, format, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		s.loggerWrapper.GetLogger("").LogWarn("Discarding invalid link preview thumbnail: %v", err)
 		return nil, 0, 0
 	}
 
-	if format != "jpeg" {
-		var buf bytes.Buffer
-		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 82}); err != nil {
-			s.loggerWrapper.GetLogger("").LogWarn("Failed to normalize link preview thumbnail to JPEG: %v", err)
-			return nil, 0, 0
-		}
-		thumbnail = buf.Bytes()
-		img, _, err = image.Decode(bytes.NewReader(thumbnail))
-		if err != nil {
-			s.loggerWrapper.GetLogger("").LogWarn("Failed to validate normalized link preview thumbnail: %v", err)
-			return nil, 0, 0
+	bounds := src.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	if w <= 0 || h <= 0 {
+		return nil, 0, 0
+	}
+
+	newW, newH := w, h
+	if w > maxDim || h > maxDim {
+		if w > h {
+			newW = maxDim
+			newH = (h * maxDim) / w
+		} else {
+			newH = maxDim
+			newW = (w * maxDim) / h
 		}
 	}
 
-	bounds := img.Bounds()
-	return thumbnail, uint32(bounds.Dx()), uint32(bounds.Dy())
+	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	draw.Draw(dst, dst.Bounds(), &image.Uniform{C: color.White}, image.Point{}, draw.Src)
+	xdraw.BiLinear.Scale(dst, dst.Bounds(), src, bounds, draw.Over, nil)
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 86}); err != nil {
+		s.loggerWrapper.GetLogger("").LogWarn("Failed to normalize link preview thumbnail to JPEG: %v", err)
+		return nil, 0, 0
+	}
+
+	s.loggerWrapper.GetLogger("").LogInfo("Link preview thumbnail normalized from %d to %d bytes (format: %s)", len(data), buf.Len(), format)
+	return buf.Bytes(), uint32(newW), uint32(newH)
 }
 
 func (s *sendService) getVideoThumbnail(data []byte) []byte {
@@ -816,7 +825,7 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 				if err == nil && imgResp.StatusCode == http.StatusOK {
 					defer imgResp.Body.Close()
 					rawImageData, _ := io.ReadAll(imgResp.Body)
-					fileData, thumbnailWidth, thumbnailHeight = s.buildLinkPreviewThumbnail(rawImageData, 300)
+					fileData, thumbnailWidth, thumbnailHeight = s.buildLinkPreviewThumbnail(rawImageData, 600)
 					if fileData == nil {
 						s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Link preview image ignored because it could not be converted to JPEG thumbnail: %s", instance.Id, data.ImgUrl)
 					}
@@ -833,6 +842,7 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 		if fileData != nil {
 			previewType = waE2E.ExtendedTextMessage_IMAGE
 		}
+		renderLargerThumbnail := fileData != nil
 		extendedText := &waE2E.ExtendedTextMessage{
 			Text:          &data.Text,
 			Title:         &data.Title,
@@ -847,7 +857,7 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 					MediaType:             &mediaType,
 					Thumbnail:             fileData,
 					SourceURL:             &matchedText,
-					RenderLargerThumbnail: proto.Bool(true),
+					RenderLargerThumbnail: &renderLargerThumbnail,
 				},
 			},
 		}

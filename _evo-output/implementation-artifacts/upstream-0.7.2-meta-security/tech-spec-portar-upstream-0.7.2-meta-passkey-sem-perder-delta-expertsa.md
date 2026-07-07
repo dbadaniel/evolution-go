@@ -93,6 +93,10 @@ context: []
   causa estrutural tambem foi corrigida: `SendMessage` nao deve zerar
   `ContextInfo` existente de `ExtendedTextMessage`, pois isso apaga
   `ExternalAdReply` do preview de link.
+- 2026-07-07: Ajustado o thumbnail do `/send/link` apos smoke real mostrar area
+  preta no lugar da imagem: imagens com alfa/transparencia agora sao achatadas
+  sobre fundo branco antes de virar JPEG, e `RenderLargerThumbnail` so fica ativo
+  quando ha thumbnail valida.
 
 ## Design Notes
 
@@ -118,4 +122,5 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
 - 2026-07-07: `/send/link` automatico apresentou preview incompleto/regressivo
   no app; patches aplicados para normalizar thumbnail JPEG e preservar
   `ContextInfo.ExternalAdReply` durante `SendMessage`. Requer rebuild e novo
-  smoke test no Docker.
+  smoke test no Docker. Smoke seguinte mostrou card com area preta no thumbnail;
+  patch adicional aplicado para compor transparencias em fundo branco.
