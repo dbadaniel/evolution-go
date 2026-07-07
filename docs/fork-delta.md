@@ -33,6 +33,35 @@ syncs can distinguish upstream code from Expertsa-specific decisions.
 - Keep generated manager/swagger updates out of the first security/passkey port
   unless they are needed for compile or API contract correctness.
 
+## Send Message Reconciliation
+
+Ported from upstream `0.7.2`:
+
+- `SendMessage` can pass `AdditionalNodes` to whatsmeow send options.
+- Button/list interactive sends now add Meta-compatible business/bot nodes.
+- CTA, Pix, reply buttons, and list messages are wrapped through
+  `DocumentWithCaptionMessage` with `MessageSecret` where upstream does so.
+- Reply-only buttons use `ButtonsMessage` instead of forcing all replies through
+  native-flow `InteractiveMessage`.
+- Copy buttons now keep Expertsa input compatibility but use safer fallbacks for
+  `id` and `copy_code`.
+- Quoted-message support recognizes nested interactive/list/buttons payloads
+  inside `DocumentWithCaptionMessage`.
+
+Preserved from Expertsa:
+
+- Local module/import path remains `github.com/EvolutionAPI/evolution-go`.
+- Local carousel behavior from the preservation commit remains in place.
+- Existing link metadata handling remains richer than upstream for timeout,
+  user-agent, OpenGraph priority, and relative image URL resolution.
+- Existing local thumbnail resize path remains in place.
+
+Deferred for a separate decision:
+
+- Whether to port upstream `ForwardingScore` behavior.
+- Whether to replace or merge local thumbnail helpers with upstream's JPEG/PDF
+  thumbnail helper style.
+
 ## Sensitive Files
 
 - `pkg/sendMessage/service/send_service.go`

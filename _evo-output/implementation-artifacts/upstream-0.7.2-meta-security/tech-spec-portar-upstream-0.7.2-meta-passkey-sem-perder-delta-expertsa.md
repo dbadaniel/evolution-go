@@ -58,8 +58,8 @@ context: []
 - [x] `pkg/passkey/**`, `passkey-helper/**`, `.env.example` -- adicionar fluxo de cerimonia e helper -- suportar contas bloqueadas por passkey.
 - [x] `pkg/whatsmeow/service/whatsmeow.go` -- portar QR/event/passkey core com imports locais -- manter socket vivo durante passkey e evitar concorrencia em maps.
 - [x] `cmd/evolution-go/main.go`, `pkg/instance/service/instance_service.go` -- registrar rotas e portar pair/status/passkey QR info -- expor o fluxo ao manager/API.
-- [ ] `pkg/sendMessage/service/send_service.go` -- reconciliar o WIP com a abordagem 0.7.2 para mensagens interativas -- evitar regressao em botoes/listas/carrossel.
-- [ ] Executar build/testes possiveis -- confirmar compilacao e unidade basica.
+- [x] `pkg/sendMessage/service/send_service.go` -- reconciliar o WIP com a abordagem 0.7.2 para mensagens interativas -- evitar regressao em botoes/listas/carrossel.
+- [x] Executar build/testes possiveis -- confirmar compilacao e unidade basica dentro dos limites atuais do ambiente.
 
 **Acceptance Criteria:**
 - Given a branch with commit `59f0101`, when integration commits are reviewed, then local button-rendering WIP remains reachable and distinguishable from upstream ports.
@@ -70,6 +70,14 @@ context: []
 
 ## Spec Change Log
 
+- 2026-07-06: Reconciliado `pkg/sendMessage/service/send_service.go` em passos pequenos:
+  `AdditionalNodes`, business/bot nodes, wrappers `DocumentWithCaptionMessage`,
+  `MessageSecret`, `ButtonsMessage` para replies, listas modernas e fallback
+  defensivo de copy button. Mantidos os comportamentos Expertsa ja existentes
+  para carrossel, metadata de link e thumbnails locais.
+- 2026-07-06: Itens upstream ainda candidatos a avaliacao separada:
+  `ForwardingScore` e paridade fina dos helpers de thumbnail do upstream.
+
 ## Design Notes
 
 Porting should be path-scoped rather than commit-cherry-pick because upstream `0.7.2` mixes functional changes with org rename and generated assets. Keep `github.com/EvolutionAPI/evolution-go` imports unless a specific file truly requires the new module path; this reduces blast radius and avoids a repo-wide import churn PR.
@@ -79,9 +87,9 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
 **Commands:**
 - `go test ./pkg/whatsmeow/service ./pkg/instance/service ./pkg/passkey/ceremony ./pkg/passkey/handler` -- passed on 2026-07-06.
 - `go test ./...` -- currently blocked outside touched packages by `github.com/chai2010/webp` build errors (`undefined: webpGetInfo`, etc.).
-- `go test ./pkg/sendMessage/service/...` -- expected: pass after reconciling interactive messages.
+- `go test ./pkg/sendMessage/service/...` -- attempted after reconciliation; blocked by the same `github.com/chai2010/webp`/CGO environment issue before package validation.
 - `go build ./cmd/evolution-go` -- expected: compile succeeds with official whatsmeow dependency.
-- `git diff --check` -- passed on 2026-07-06.
+- `git diff --check` -- passed on 2026-07-06 after each `send_service.go` step.
 
 **Manual checks (if no CLI):**
 - Review QR normal, passkey-required pairing, pair-phone error handling, and button/list/carousel payload shape before release.
