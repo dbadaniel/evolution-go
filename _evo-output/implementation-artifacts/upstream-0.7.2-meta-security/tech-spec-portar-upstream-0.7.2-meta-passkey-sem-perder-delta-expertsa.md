@@ -89,7 +89,10 @@ context: []
 - 2026-07-07: Corrigida regressao em `/send/link`: o preview automatico agora
   valida/converte a imagem para JPEG antes de preencher `JPEGThumbnail`, define
   `previewType` e dimensoes quando ha thumbnail valida, e evita enviar bytes de
-  formatos nao suportados que podem deixar o app em "aguardando mensagem".
+  formatos nao suportados que podem deixar o app em "aguardando mensagem". A
+  causa estrutural tambem foi corrigida: `SendMessage` nao deve zerar
+  `ContextInfo` existente de `ExtendedTextMessage`, pois isso apaga
+  `ExternalAdReply` do preview de link.
 
 ## Design Notes
 
@@ -113,5 +116,6 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
 - 2026-07-07: `/send/list` initial smoke with `single_select` did not render;
   after restoring the `product_list` transport node, the manual smoke test passed.
 - 2026-07-07: `/send/link` automatico apresentou preview incompleto/regressivo
-  no app; patch aplicado para normalizar thumbnail JPEG. Requer rebuild e novo
+  no app; patches aplicados para normalizar thumbnail JPEG e preservar
+  `ContextInfo.ExternalAdReply` durante `SendMessage`. Requer rebuild e novo
   smoke test no Docker.

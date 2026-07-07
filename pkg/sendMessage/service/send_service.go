@@ -2384,11 +2384,12 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 	if data.Quoted.MessageID != "" {
 		switch messageType {
 		case "ExtendedTextMessage":
-			m.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{
-				StanzaID:      proto.String(data.Quoted.MessageID),
-				Participant:   proto.String(data.Quoted.Participant),
-				QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
+			if m.ExtendedTextMessage.ContextInfo == nil {
+				m.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{}
 			}
+			m.ExtendedTextMessage.ContextInfo.StanzaID = proto.String(data.Quoted.MessageID)
+			m.ExtendedTextMessage.ContextInfo.Participant = proto.String(data.Quoted.Participant)
+			m.ExtendedTextMessage.ContextInfo.QuotedMessage = &waE2E.Message{Conversation: proto.String("")}
 		case "ImageMessage":
 			m.ImageMessage.ContextInfo = &waE2E.ContextInfo{
 				StanzaID:      proto.String(data.Quoted.MessageID),
@@ -2511,7 +2512,9 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 	} else {
 		switch messageType {
 		case "ExtendedTextMessage":
-			msg.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{}
+			if msg.ExtendedTextMessage.ContextInfo == nil {
+				msg.ExtendedTextMessage.ContextInfo = &waE2E.ContextInfo{}
+			}
 		case "ImageMessage":
 			msg.ImageMessage.ContextInfo = &waE2E.ContextInfo{}
 			isMedia = true
