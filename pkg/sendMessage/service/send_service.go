@@ -683,6 +683,40 @@ func (s *sendService) resizeThumbnail(data []byte, maxDim int) []byte {
 	return buf.Bytes()
 }
 
+func (s *sendService) buildLinkPreviewThumbnail(data []byte, maxDim int) ([]byte, uint32, uint32) {
+	if len(data) == 0 {
+		return nil, 0, 0
+	}
+
+	thumbnail := s.resizeThumbnail(data, maxDim)
+	if len(thumbnail) == 0 {
+		return nil, 0, 0
+	}
+
+	img, format, err := image.Decode(bytes.NewReader(thumbnail))
+	if err != nil {
+		s.loggerWrapper.GetLogger("").LogWarn("Discarding invalid link preview thumbnail: %v", err)
+		return nil, 0, 0
+	}
+
+	if format != "jpeg" {
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 82}); err != nil {
+			s.loggerWrapper.GetLogger("").LogWarn("Failed to normalize link preview thumbnail to JPEG: %v", err)
+			return nil, 0, 0
+		}
+		thumbnail = buf.Bytes()
+		img, _, err = image.Decode(bytes.NewReader(thumbnail))
+		if err != nil {
+			s.loggerWrapper.GetLogger("").LogWarn("Failed to validate normalized link preview thumbnail: %v", err)
+			return nil, 0, 0
+		}
+	}
+
+	bounds := img.Bounds()
+	return thumbnail, uint32(bounds.Dx()), uint32(bounds.Dy())
+}
+
 func (s *sendService) getVideoThumbnail(data []byte) []byte {
 	if len(data) == 0 {
 		return nil
@@ -769,6 +803,7 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 		}
 
 		var fileData []byte
+		var thumbnailWidth, thumbnailHeight uint32
 		if data.ImgUrl != "" {
 			// Download da imagem da miniatura com User-Agent para evitar bloqueios em produção
 			imgReq, err := http.NewRequest("GET", data.ImgUrl, nil)
@@ -780,8 +815,11 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 				imgResp, err := imgClient.Do(imgReq)
 				if err == nil && imgResp.StatusCode == http.StatusOK {
 					defer imgResp.Body.Close()
-					fileData, _ = io.ReadAll(imgResp.Body)
-					fileData = s.resizeThumbnail(fileData, 100)
+					rawImageData, _ := io.ReadAll(imgResp.Body)
+					fileData, thumbnailWidth, thumbnailHeight = s.buildLinkPreviewThumbnail(rawImageData, 300)
+					if fileData == nil {
+						s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Link preview image ignored because it could not be converted to JPEG thumbnail: %s", instance.Id, data.ImgUrl)
+					}
 				} else if err != nil {
 					s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Failed to download link preview image: %v", instance.Id, err)
 				} else {
@@ -791,24 +829,39 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 		}
 
 		mediaType := waE2E.ContextInfo_ExternalAdReplyInfo_IMAGE
-		msg := &waE2E.Message{
-			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
-				Text:          &data.Text,
-				Title:         &data.Title,
-				MatchedText:   &matchedText,
-				JPEGThumbnail: fileData,
-				Description:   &data.Description,
-				ContextInfo: &waE2E.ContextInfo{
-					ExternalAdReply: &waE2E.ContextInfo_ExternalAdReplyInfo{
-						Title:                 &data.Title,
-						Body:                  &data.Description,
-						MediaType:             &mediaType,
-						Thumbnail:             fileData,
-						SourceURL:             &matchedText,
-						RenderLargerThumbnail: proto.Bool(true),
-					},
+		previewType := waE2E.ExtendedTextMessage_PLACEHOLDER
+		if fileData != nil {
+			previewType = waE2E.ExtendedTextMessage_IMAGE
+		}
+		extendedText := &waE2E.ExtendedTextMessage{
+			Text:          &data.Text,
+			Title:         &data.Title,
+			MatchedText:   &matchedText,
+			PreviewType:   &previewType,
+			JPEGThumbnail: fileData,
+			Description:   &data.Description,
+			ContextInfo: &waE2E.ContextInfo{
+				ExternalAdReply: &waE2E.ContextInfo_ExternalAdReplyInfo{
+					Title:                 &data.Title,
+					Body:                  &data.Description,
+					MediaType:             &mediaType,
+					Thumbnail:             fileData,
+					SourceURL:             &matchedText,
+					RenderLargerThumbnail: proto.Bool(true),
 				},
 			},
+		}
+		if fileData != nil {
+			extendedText.ThumbnailWidth = proto.Uint32(thumbnailWidth)
+			extendedText.ThumbnailHeight = proto.Uint32(thumbnailHeight)
+		}
+		if data.ImgUrl != "" {
+			extendedText.ContextInfo.ExternalAdReply.ThumbnailURL = &data.ImgUrl
+			extendedText.ContextInfo.ExternalAdReply.OriginalImageURL = &data.ImgUrl
+		}
+
+		msg := &waE2E.Message{
+			ExtendedTextMessage: extendedText,
 		}
 
 		message, err := s.SendMessage(instance, msg, "ExtendedTextMessage", &SendDataStruct{

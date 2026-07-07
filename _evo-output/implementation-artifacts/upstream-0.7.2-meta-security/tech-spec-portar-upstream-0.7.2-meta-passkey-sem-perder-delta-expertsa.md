@@ -86,6 +86,10 @@ context: []
 - 2026-07-07: Restaurado o delta local antigo de lista: o node `biz/list` usa
   `type=product_list`, alinhado ao changelog v0.7.0 e ao fork
   `marcelotadeujr/whatsmeow`, em vez de `type=single_select` do upstream puro.
+- 2026-07-07: Corrigida regressao em `/send/link`: o preview automatico agora
+  valida/converte a imagem para JPEG antes de preencher `JPEGThumbnail`, define
+  `previewType` e dimensoes quando ha thumbnail valida, e evita enviar bytes de
+  formatos nao suportados que podem deixar o app em "aguardando mensagem".
 
 ## Design Notes
 
@@ -108,3 +112,6 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
   recipient app.
 - 2026-07-07: `/send/list` initial smoke with `single_select` did not render;
   after restoring the `product_list` transport node, the manual smoke test passed.
+- 2026-07-07: `/send/link` automatico apresentou preview incompleto/regressivo
+  no app; patch aplicado para normalizar thumbnail JPEG. Requer rebuild e novo
+  smoke test no Docker.
