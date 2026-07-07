@@ -1810,9 +1810,18 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 			}
 		case "copy":
 			name = "cta_copy"
+			copyCode := v.CopyCode
+			if copyCode == "" {
+				copyCode = v.Id
+			}
+			copyID := v.Id
+			if copyID == "" {
+				copyID = "copy_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+			}
 			paramsData = map[string]interface{}{
 				"display_text": v.DisplayText,
-				"copy_code":    v.CopyCode,
+				"id":           copyID,
+				"copy_code":    copyCode,
 			}
 		case "url":
 			name = "cta_url"
