@@ -2046,33 +2046,43 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 		}
 	}
 
-	var nativeFlowName string
-	switch {
-	case hasReply && !hasOtherTypes && !hasPix:
-		nativeFlowName = "quick_reply"
-	case hasPix:
-		nativeFlowName = "payment_info"
-	default:
-		nativeFlowName = "mixed"
-	}
-
-	bizNodes := []waBinary.Node{
-		{
-			Tag: "biz",
-			Content: []waBinary.Node{{
-				Tag: "interactive",
-				Attrs: waBinary.Attrs{
-					"type": "native_flow",
-					"v":    "1",
-				},
+	var bizNodes []waBinary.Node
+	if hasReply && !hasOtherTypes && !hasPix {
+		bizNodes = []waBinary.Node{
+			{
+				Tag: "biz",
 				Content: []waBinary.Node{{
-					Tag: "native_flow",
-					Attrs: waBinary.Attrs{
-						"name": nativeFlowName,
-					},
+					Tag: "buttons",
 				}},
-			}},
-		},
+			},
+		}
+	} else {
+		var nativeFlowName string
+		switch {
+		case hasPix:
+			nativeFlowName = "payment_info"
+		default:
+			nativeFlowName = "mixed"
+		}
+
+		bizNodes = []waBinary.Node{
+			{
+				Tag: "biz",
+				Content: []waBinary.Node{{
+					Tag: "interactive",
+					Attrs: waBinary.Attrs{
+						"type": "native_flow",
+						"v":    "1",
+					},
+					Content: []waBinary.Node{{
+						Tag: "native_flow",
+						Attrs: waBinary.Attrs{
+							"name": nativeFlowName,
+						},
+					}},
+				}},
+			},
+		}
 	}
 	if !strings.Contains(data.Number, "@g.us") {
 		bizNodes = append(bizNodes, waBinary.Node{
