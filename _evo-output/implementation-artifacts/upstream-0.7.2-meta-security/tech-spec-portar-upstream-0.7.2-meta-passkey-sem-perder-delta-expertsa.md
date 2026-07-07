@@ -101,6 +101,10 @@ context: []
   leitura de metadata (`og:image:secure_url`, `og:image:url`,
   `twitter:image:src`, `itemprop=image`, `link rel=image_src`) para diferenciar
   falta de `imgUrl`, falha de download e falha de conversao de thumbnail.
+- 2026-07-07: Ajustado fallback de `/send/link`: quando nao ha thumbnail local
+  valida, o payload nao declara mais `mediaType=IMAGE` nem envia
+  `ThumbnailURL`/`OriginalImageURL`, evitando placeholder visual quebrado. Links
+  com thumbnail valida continuam usando imagem.
 
 ## Design Notes
 
@@ -129,4 +133,6 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
   smoke test no Docker. Smoke seguinte mostrou card com area preta no thumbnail;
   patch adicional aplicado para compor transparencias em fundo branco. Logs
   posteriores nao exibiram linha de thumbnail; parser/logs de metadata foram
-  ampliados para confirmar se o container esta encontrando `imgUrl`.
+  ampliados para confirmar se o container esta encontrando `imgUrl`. Smoke
+  mostrou placeholder de link quando a thumbnail nao veio; fallback ajustado para
+  nao declarar imagem sem bytes de thumbnail.

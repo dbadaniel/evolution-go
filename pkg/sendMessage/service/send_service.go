@@ -868,9 +868,10 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 			s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Link preview image URL is empty after metadata fetch for %s", instance.Id, matchedText)
 		}
 
-		mediaType := waE2E.ContextInfo_ExternalAdReplyInfo_IMAGE
+		mediaType := waE2E.ContextInfo_ExternalAdReplyInfo_NONE
 		previewType := waE2E.ExtendedTextMessage_PLACEHOLDER
 		if fileData != nil {
+			mediaType = waE2E.ContextInfo_ExternalAdReplyInfo_IMAGE
 			previewType = waE2E.ExtendedTextMessage_IMAGE
 		}
 		renderLargerThumbnail := fileData != nil
@@ -895,10 +896,10 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 		if fileData != nil {
 			extendedText.ThumbnailWidth = proto.Uint32(thumbnailWidth)
 			extendedText.ThumbnailHeight = proto.Uint32(thumbnailHeight)
-		}
-		if data.ImgUrl != "" {
-			extendedText.ContextInfo.ExternalAdReply.ThumbnailURL = &data.ImgUrl
-			extendedText.ContextInfo.ExternalAdReply.OriginalImageURL = &data.ImgUrl
+			if data.ImgUrl != "" {
+				extendedText.ContextInfo.ExternalAdReply.ThumbnailURL = &data.ImgUrl
+				extendedText.ContextInfo.ExternalAdReply.OriginalImageURL = &data.ImgUrl
+			}
 		}
 
 		msg := &waE2E.Message{
