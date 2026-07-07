@@ -43,6 +43,10 @@ Ported from upstream `0.7.2`:
   `DocumentWithCaptionMessage` with `MessageSecret` where upstream does so.
 - Reply-only buttons use `ButtonsMessage` instead of forcing all replies through
   native-flow `InteractiveMessage`.
+- Reply-only buttons intentionally omit `AdditionalNodes`: real WhatsApp testing
+  showed both `native_flow` and `buttons` biz nodes return `405` with the current
+  stack. The message is now accepted as `ButtonsMessage`, but visual rendering
+  remains a pre-existing button-rendering issue to investigate separately.
 - Copy buttons now keep Expertsa input compatibility but use safer fallbacks for
   `id` and `copy_code`.
 - Quoted-message support recognizes nested interactive/list/buttons payloads
@@ -52,6 +56,7 @@ Preserved from Expertsa:
 
 - Local module/import path remains `github.com/EvolutionAPI/evolution-go`.
 - Local carousel behavior from the preservation commit remains in place.
+- Carousel was manually validated after the upstream sync and remained functional.
 - Existing link metadata handling remains richer than upstream for timeout,
   user-agent, OpenGraph priority, and relative image URL resolution.
 - Existing local thumbnail resize path remains in place.

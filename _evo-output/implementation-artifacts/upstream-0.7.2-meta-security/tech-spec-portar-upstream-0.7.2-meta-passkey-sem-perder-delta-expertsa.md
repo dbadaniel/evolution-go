@@ -77,6 +77,12 @@ context: []
   para carrossel, metadata de link e thumbnails locais.
 - 2026-07-06: Itens upstream ainda candidatos a avaliacao separada:
   `ForwardingScore` e paridade fina dos helpers de thumbnail do upstream.
+- 2026-07-07: Teste real em `devogo.expertsa.com.br`: reply buttons passaram de
+  `server returned error 405` para envio aceito como `ButtonsMessage` com receipt
+  e webhook apos omitir `AdditionalNodes` nesse caso. Renderizacao visual do
+  botao no WhatsApp ainda nao ocorreu, mas foi classificada como pendencia ja
+  existente na versao anterior, nao regressao nova desta integracao. Carrossel
+  foi validado como funcional.
 
 ## Design Notes
 
@@ -93,3 +99,7 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
 
 **Manual checks (if no CLI):**
 - Review QR normal, passkey-required pairing, pair-phone error handling, and button/list/carousel payload shape before release.
+- 2026-07-07: `/send/carousel` passed manual smoke test. `/send/button` reply
+  returns success/receipt/webhook as `ButtonsMessage`, but still needs a separate
+  rendering investigation because the visual button was not delivered to the
+  recipient app.
