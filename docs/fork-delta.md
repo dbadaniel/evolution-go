@@ -72,6 +72,14 @@ Deferred for a separate decision:
 - Whether to port upstream `ForwardingScore` behavior.
 - Whether to replace or merge local thumbnail helpers with upstream's JPEG/PDF
   thumbnail helper style.
+- Message pin support (`/message/pin` and `/message/unpin`) is not part of the
+  passkey/security release acceptance yet. The API endpoint commit exists in the
+  root repository, but the transport-level `edit=2` experiment was made only in
+  the local `whatsmeow-lib` directory. Because the root `go.mod` intentionally
+  uses official `go.mau.fi/whatsmeow` without `replace`, that local library patch
+  is not included in the API build. Revisit later via upstream support, a
+  versioned fork, or an explicit temporary `replace`; do not silently return to
+  the local `whatsmeow-lib` while the main goal remains passkey compatibility.
 
 ## Sensitive Files
 

@@ -41,8 +41,15 @@ context: []
 - `pkg/message/service/message_service.go` -- contratos, payload e envio da mensagem especial de pin/unpin.
 - `pkg/message/handler/message_handler.go` -- handlers HTTP e validacao basica dos novos endpoints.
 - `pkg/routes/routes.go` -- registro de `/message/pin` e `/message/unpin`.
-- `whatsmeow-lib/send.go` -- deteccao de `PinInChatMessage` para preencher atributo `edit=2`.
-- `whatsmeow-lib/types/message.go` -- ja contem `EditAttributePinInChat`, deve ser reaproveitado.
+- `whatsmeow-lib/send.go` -- experimento local para detectar `PinInChatMessage` e preencher atributo `edit=2`; **nao entra no build atual da API** porque `go.mod` usa `go.mau.fi/whatsmeow` oficial sem `replace`.
+- `whatsmeow-lib/types/message.go` -- contem `EditAttributePinInChat`, mas so afeta a API se a dependencia local/fork versionado for usada.
+
+## Current Build Status
+
+- A API raiz tem o commit `793d01d feat: add message pin endpoints`, que adiciona `/message/pin` e `/message/unpin`.
+- O diretorio `whatsmeow-lib` tem o commit local `0a49705 feat: support message pin edit attribute`, mas esse diretorio esta fora do build efetivo da API enquanto `go.mod` continuar apontando para `go.mau.fi/whatsmeow`.
+- Portanto, o pin de mensagem deve ser considerado **experimental/incompleto** nesta branch: a rota pode existir e enviar `PinInChatMessage`, mas nao ha garantia de renderizacao/fixacao real no WhatsApp sem uma versao do whatsmeow que envie `edit=2`.
+- Nao voltar a usar `replace go.mau.fi/whatsmeow => ./whatsmeow-lib` apenas por causa deste recurso sem decisao explicita, pois o objetivo principal da release e passkey/Meta security com a dependencia oficial.
 
 ## Tasks & Acceptance
 
@@ -72,3 +79,11 @@ context: []
 **Manual checks:**
 - Enviar mensagem normal, capturar o `messageId`, chamar `/message/pin` e verificar no celular se a mensagem aparece fixada dentro do chat.
 - Chamar `/message/unpin` com o mesmo alvo e verificar se a mensagem deixa de aparecer fixada.
+
+## Follow-Up Decision
+
+- Decidir depois se o pin de mensagem deve ser retomado por uma destas vias:
+  - upstream oficial do `go.mau.fi/whatsmeow` ja suportando `PinInChatMessage` com `edit=2`;
+  - fork versionado do whatsmeow com patch pequeno e rastreavel;
+  - `replace` local temporario apenas para teste controlado, nunca como mudanca silenciosa da release.
+- Se a prioridade continuar sendo passkey, manter este recurso fora do escopo de release e nao usar os endpoints como evidencia de suporte completo.
