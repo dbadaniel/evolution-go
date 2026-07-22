@@ -92,6 +92,8 @@ type StatusStruct struct {
 type QrcodeStruct struct {
 	Qrcode         string `json:"qrcode"`
 	Code           string `json:"code"`
+	QrcodeLegacy   string `json:"Qrcode,omitempty"`
+	CodeLegacy     string `json:"Code,omitempty"`
 	PasskeyStage   string `json:"passkeyStage,omitempty"`
 	PasskeyOpenURL string `json:"passkeyOpenUrl,omitempty"`
 	PasskeyCode    string `json:"passkeyCode,omitempty"`
@@ -480,8 +482,10 @@ func (i instances) GetQr(instance *instance_model.Instance) (*QrcodeStruct, erro
 	}
 
 	qr := &QrcodeStruct{
-		Qrcode: parts[0],
-		Code:   parts[1],
+		Qrcode:       parts[0],
+		Code:         parts[1],
+		QrcodeLegacy: parts[0],
+		CodeLegacy:   parts[1],
 	}
 
 	return qr, nil
