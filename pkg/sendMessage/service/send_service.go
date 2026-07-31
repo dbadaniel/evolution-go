@@ -77,6 +77,7 @@ type SendDataStruct struct {
 	Quoted          QuotedStruct
 	MediaHandle     string
 	AdditionalNodes *[]waBinary.Node
+	ForwardingScore *uint32
 }
 
 type QuotedStruct struct {
@@ -85,14 +86,15 @@ type QuotedStruct struct {
 }
 
 type TextStruct struct {
-	Number       string       `json:"number"`
-	Text         string       `json:"text"`
-	Id           string       `json:"id"`
-	Delay        int32        `json:"delay"`
-	MentionedJID []string     `json:"mentionedJid"`
-	MentionAll   bool         `json:"mentionAll"`
-	FormatJid    *bool        `json:"formatJid,omitempty"`
-	Quoted       QuotedStruct `json:"quoted"`
+	Number          string       `json:"number"`
+	Text            string       `json:"text"`
+	Id              string       `json:"id"`
+	Delay           int32        `json:"delay"`
+	MentionedJID    []string     `json:"mentionedJid"`
+	MentionAll      bool         `json:"mentionAll"`
+	FormatJid       *bool        `json:"formatJid,omitempty"`
+	Quoted          QuotedStruct `json:"quoted"`
+	ForwardingScore *uint32      `json:"forwardingScore,omitempty"`
 }
 
 type LinkStruct struct {
@@ -111,17 +113,18 @@ type LinkStruct struct {
 }
 
 type MediaStruct struct {
-	Number       string       `json:"number"`
-	Url          string       `json:"url"`
-	Type         string       `json:"type"`
-	Caption      string       `json:"caption"`
-	Filename     string       `json:"filename"`
-	Id           string       `json:"id"`
-	Delay        int32        `json:"delay"`
-	MentionedJID []string     `json:"mentionedJid"`
-	MentionAll   bool         `json:"mentionAll"`
-	FormatJid    *bool        `json:"formatJid,omitempty"`
-	Quoted       QuotedStruct `json:"quoted"`
+	Number          string       `json:"number"`
+	Url             string       `json:"url"`
+	Type            string       `json:"type"`
+	Caption         string       `json:"caption"`
+	Filename        string       `json:"filename"`
+	Id              string       `json:"id"`
+	Delay           int32        `json:"delay"`
+	MentionedJID    []string     `json:"mentionedJid"`
+	MentionAll      bool         `json:"mentionAll"`
+	FormatJid       *bool        `json:"formatJid,omitempty"`
+	Quoted          QuotedStruct `json:"quoted"`
+	ForwardingScore *uint32      `json:"forwardingScore,omitempty"`
 }
 
 type PollStruct struct {
@@ -527,13 +530,14 @@ func (s *sendService) sendTextWithRetry(data *TextStruct, instance *instance_mod
 		}
 
 		message, err := s.SendMessage(instance, msg, "ExtendedTextMessage", &SendDataStruct{
-			Id:           data.Id,
-			Number:       data.Number,
-			Quoted:       data.Quoted,
-			Delay:        data.Delay,
-			MentionAll:   data.MentionAll,
-			MentionedJID: data.MentionedJID,
-			FormatJid:    data.FormatJid,
+			Id:              data.Id,
+			Number:          data.Number,
+			Quoted:          data.Quoted,
+			Delay:           data.Delay,
+			MentionAll:      data.MentionAll,
+			MentionedJID:    data.MentionedJID,
+			FormatJid:       data.FormatJid,
+			ForwardingScore: data.ForwardingScore,
 		})
 
 		if err != nil {
@@ -844,6 +848,46 @@ func (s *sendService) resizeThumbnail(data []byte, maxDim int) []byte {
 
 	s.loggerWrapper.GetLogger("").LogInfo("Thumbnail resized from %d to %d bytes (format: %s)", len(data), buf.Len(), format)
 	return buf.Bytes()
+}
+
+// makePDFThumbnail rasterizes the first page of a PDF into a JPEG thumbnail
+// using the external "pdftoppm" tool (poppler-utils). It returns nil when
+// pdftoppm is not installed or rasterization fails, so callers can gracefully
+// send the document without a preview instead of failing the request.
+func (s *sendService) makePDFThumbnail(fileData []byte, maxWidth int) []byte {
+	if _, err := exec.LookPath("pdftoppm"); err != nil {
+		return nil
+	}
+
+	scaleWidth := maxWidth
+	if scaleWidth < 1 {
+		scaleWidth = 72
+	}
+
+	// Render only the first page to a PNG on stdout, scaled to scaleWidth.
+	// "-scale-to-y -1" keeps the original aspect ratio.
+	cmd := exec.Command("pdftoppm",
+		"-png",
+		"-f", "1",
+		"-l", "1",
+		"-singlefile",
+		"-scale-to-x", strconv.Itoa(scaleWidth),
+		"-scale-to-y", "-1",
+	)
+	cmd.Stdin = bytes.NewReader(fileData)
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		s.loggerWrapper.GetLogger("").LogWarn("Failed to rasterize PDF thumbnail with pdftoppm: %v", err)
+		return nil
+	}
+	if out.Len() == 0 {
+		return nil
+	}
+
+	// Re-encode the rendered PNG as a JPEG thumbnail via the existing local helper.
+	return s.resizeThumbnail(out.Bytes(), maxWidth)
 }
 
 func (s *sendService) buildLinkPreviewThumbnail(data []byte, maxDim int) ([]byte, uint32, uint32) {
@@ -1416,15 +1460,23 @@ func (s *sendService) sendMediaFileWithRetry(data *MediaStruct, fileData []byte,
 			}
 			mediaType = "AudioMessage"
 		case "document":
+			// For PDF documents, rasterize page 1 into a JPEG preview thumbnail.
+			// A missing pdftoppm or a failure yields nil and the document is
+			// sent without a preview instead of failing the request.
+			var jpegThumb []byte
+			if mimeType == "application/pdf" {
+				jpegThumb = s.makePDFThumbnail(fileData, 200)
+			}
 			if isNewsletter {
 				media = &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{
-					FileName:   &data.Filename,
-					Caption:    proto.String(data.Caption),
-					URL:        &uploaded.URL,
-					DirectPath: &uploaded.DirectPath,
-					Mimetype:   proto.String(mimeType),
-					FileSHA256: uploaded.FileSHA256,
-					FileLength: &uploaded.FileLength,
+					FileName:      &data.Filename,
+					Caption:       proto.String(data.Caption),
+					URL:           &uploaded.URL,
+					DirectPath:    &uploaded.DirectPath,
+					Mimetype:      proto.String(mimeType),
+					FileSHA256:    uploaded.FileSHA256,
+					FileLength:    &uploaded.FileLength,
+					JPEGThumbnail: jpegThumb,
 				}}
 			} else {
 				media = &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{
@@ -1437,6 +1489,7 @@ func (s *sendService) sendMediaFileWithRetry(data *MediaStruct, fileData []byte,
 					FileEncSHA256: uploaded.FileEncSHA256,
 					FileSHA256:    uploaded.FileSHA256,
 					FileLength:    proto.Uint64(uint64(len(fileData))),
+					JPEGThumbnail: jpegThumb,
 				}}
 			}
 
@@ -1455,14 +1508,15 @@ func (s *sendService) sendMediaFileWithRetry(data *MediaStruct, fileData []byte,
 		}
 
 		message, err := s.SendMessage(instance, media, mediaType, &SendDataStruct{
-			Id:           data.Id,
-			Number:       data.Number,
-			Quoted:       data.Quoted,
-			Delay:        data.Delay,
-			MentionAll:   data.MentionAll,
-			MentionedJID: data.MentionedJID,
-			FormatJid:    data.FormatJid,
-			MediaHandle:  uploaded.Handle,
+			Id:              data.Id,
+			Number:          data.Number,
+			Quoted:          data.Quoted,
+			Delay:           data.Delay,
+			MentionAll:      data.MentionAll,
+			MentionedJID:    data.MentionedJID,
+			FormatJid:       data.FormatJid,
+			MediaHandle:     uploaded.Handle,
+			ForwardingScore: data.ForwardingScore,
 		})
 
 		if err != nil {
@@ -1708,15 +1762,23 @@ func (s *sendService) sendMediaUrlWithRetry(data *MediaStruct, instance *instanc
 			}
 			mediaType = "AudioMessage"
 		case "document":
+			// For PDF documents, rasterize page 1 into a JPEG preview thumbnail.
+			// A missing pdftoppm or a failure yields nil and the document is
+			// sent without a preview instead of failing the request.
+			var jpegThumb []byte
+			if mimeType == "application/pdf" {
+				jpegThumb = s.makePDFThumbnail(fileData, 200)
+			}
 			if isNewsletter {
 				media = &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{
-					URL:        &uploaded.URL,
-					FileName:   &data.Filename,
-					Caption:    proto.String(data.Caption),
-					DirectPath: &uploaded.DirectPath,
-					Mimetype:   proto.String(mimeType),
-					FileSHA256: uploaded.FileSHA256,
-					FileLength: &uploaded.FileLength,
+					URL:           &uploaded.URL,
+					FileName:      &data.Filename,
+					Caption:       proto.String(data.Caption),
+					DirectPath:    &uploaded.DirectPath,
+					Mimetype:      proto.String(mimeType),
+					FileSHA256:    uploaded.FileSHA256,
+					FileLength:    &uploaded.FileLength,
+					JPEGThumbnail: jpegThumb,
 				}}
 			} else {
 				media = &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{
@@ -1729,6 +1791,7 @@ func (s *sendService) sendMediaUrlWithRetry(data *MediaStruct, instance *instanc
 					FileEncSHA256: uploaded.FileEncSHA256,
 					FileSHA256:    uploaded.FileSHA256,
 					FileLength:    proto.Uint64(uint64(len(fileData))),
+					JPEGThumbnail: jpegThumb,
 				}}
 			}
 
@@ -1748,14 +1811,15 @@ func (s *sendService) sendMediaUrlWithRetry(data *MediaStruct, instance *instanc
 
 		messageStart := time.Now()
 		message, err := s.SendMessage(instance, media, mediaType, &SendDataStruct{
-			Id:           data.Id,
-			Number:       data.Number,
-			Quoted:       data.Quoted,
-			Delay:        data.Delay,
-			MentionAll:   data.MentionAll,
-			MentionedJID: data.MentionedJID,
-			FormatJid:    data.FormatJid,
-			MediaHandle:  uploaded.Handle,
+			Id:              data.Id,
+			Number:          data.Number,
+			Quoted:          data.Quoted,
+			Delay:           data.Delay,
+			MentionAll:      data.MentionAll,
+			MentionedJID:    data.MentionedJID,
+			FormatJid:       data.FormatJid,
+			MediaHandle:     uploaded.Handle,
+			ForwardingScore: data.ForwardingScore,
 		})
 
 		if err != nil {
@@ -2730,6 +2794,76 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 			// ContextInfo already set in SendButton
 		default:
 			return nil, fmt.Errorf("invalid messageType: %s", messageType)
+		}
+	}
+
+	// Apply ForwardingScore to whichever ContextInfo was set above.
+	// WhatsApp renders "Encaminhada" when ContextInfo.ForwardingScore > 0.
+	if data.ForwardingScore != nil && *data.ForwardingScore > 0 {
+		switch messageType {
+		case "ExtendedTextMessage":
+			if msg.ExtendedTextMessage != nil && msg.ExtendedTextMessage.ContextInfo != nil {
+				msg.ExtendedTextMessage.ContextInfo.ForwardingScore = data.ForwardingScore
+				msg.ExtendedTextMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			}
+		case "ImageMessage":
+			if msg.ImageMessage != nil && msg.ImageMessage.ContextInfo != nil {
+				msg.ImageMessage.ContextInfo.ForwardingScore = data.ForwardingScore
+				msg.ImageMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			}
+		case "VideoMessage":
+			if msg.VideoMessage != nil && msg.VideoMessage.ContextInfo != nil {
+				msg.VideoMessage.ContextInfo.ForwardingScore = data.ForwardingScore
+				msg.VideoMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			}
+		case "PtvMessage":
+			if msg.PtvMessage != nil && msg.PtvMessage.ContextInfo != nil {
+				msg.PtvMessage.ContextInfo.ForwardingScore = data.ForwardingScore
+				msg.PtvMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			}
+		case "AudioMessage":
+			if msg.AudioMessage != nil && msg.AudioMessage.ContextInfo != nil {
+				msg.AudioMessage.ContextInfo.ForwardingScore = data.ForwardingScore
+				msg.AudioMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			}
+		case "DocumentMessage":
+			if msg.DocumentMessage != nil && msg.DocumentMessage.ContextInfo != nil {
+				msg.DocumentMessage.ContextInfo.ForwardingScore = data.ForwardingScore
+				msg.DocumentMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			} else if msg.DocumentWithCaptionMessage != nil && msg.DocumentWithCaptionMessage.Message != nil && msg.DocumentWithCaptionMessage.Message.DocumentMessage != nil && msg.DocumentWithCaptionMessage.Message.DocumentMessage.ContextInfo != nil {
+				msg.DocumentWithCaptionMessage.Message.DocumentMessage.ContextInfo.ForwardingScore = data.ForwardingScore
+				msg.DocumentWithCaptionMessage.Message.DocumentMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			}
+		case "PollCreationMessage":
+			if msg.PollCreationMessage != nil && msg.PollCreationMessage.ContextInfo != nil {
+				msg.PollCreationMessage.ContextInfo.ForwardingScore = data.ForwardingScore
+				msg.PollCreationMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			}
+		case "StickerMessage":
+			if msg.StickerMessage != nil && msg.StickerMessage.ContextInfo != nil {
+				msg.StickerMessage.ContextInfo.ForwardingScore = data.ForwardingScore
+				msg.StickerMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			}
+		case "LocationMessage":
+			if msg.LocationMessage != nil && msg.LocationMessage.ContextInfo != nil {
+				msg.LocationMessage.ContextInfo.ForwardingScore = data.ForwardingScore
+				msg.LocationMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			}
+		case "ContactMessage":
+			if msg.ContactMessage != nil && msg.ContactMessage.ContextInfo != nil {
+				msg.ContactMessage.ContextInfo.ForwardingScore = data.ForwardingScore
+				msg.ContactMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			}
+		case "InteractiveMessage":
+			if msg.InteractiveMessage != nil && msg.InteractiveMessage.ContextInfo != nil {
+				msg.InteractiveMessage.ContextInfo.ForwardingScore = data.ForwardingScore
+				msg.InteractiveMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			}
+		case "ListMessage":
+			if msg.ListMessage != nil && msg.ListMessage.ContextInfo != nil {
+				msg.ListMessage.ContextInfo.ForwardingScore = data.ForwardingScore
+				msg.ListMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			}
 		}
 	}
 
