@@ -1661,7 +1661,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			if evt.Type == types.ReceiptTypeRead {
 				postMap["state"] = "Read"
 				for _, v := range evt.MessageIDs {
-					messageKey := fmt.Sprintf("%s_%s_%s", mycli.userID, v, "Read")
+					messageKey := fmt.Sprintf("%s_%s_%s_%s", mycli.userID, v, evt.SourceString(), "Read")
 					if _, found := mycli.processedMessages.Get(messageKey); found {
 						mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message duplicated ignored: %s", mycli.userID, v)
 						continue
@@ -1693,7 +1693,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			message.Status = "Delivered"
 			message.Source = evt.Chat.ToNonAD().User
 
-			messageKey := fmt.Sprintf("%s_%s_%s", mycli.userID, evt.MessageIDs[0], "Delivered")
+			messageKey := fmt.Sprintf("%s_%s_%s_%s", mycli.userID, evt.MessageIDs[0], evt.SourceString(), "Delivered")
 			if _, found := mycli.processedMessages.Get(messageKey); found {
 				mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message duplicated ignored: %s", mycli.userID, evt.MessageIDs[0])
 				return
