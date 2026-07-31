@@ -681,7 +681,7 @@ func (i instances) RemoveProxy(id string) error {
 }
 
 func (i instances) ForceReconnect(instanceId string, number string) error {
-	if i.clientPointer[instanceId].IsConnected() && i.clientPointer[instanceId].IsLoggedIn() {
+	if client := i.clientPointer[instanceId]; client != nil && client.IsConnected() && client.IsLoggedIn() {
 		return fmt.Errorf("client already connected")
 	}
 
@@ -697,8 +697,6 @@ func (i instances) ForceReconnect(instanceId string, number string) error {
 
 	subscribedEvents := strings.Split(instance.Events, ",")
 
-	i.killChannel[instance.Id] = make(chan bool)
-
 	clientData := &whatsmeow_service.ClientData{
 		Instance:      instance,
 		Subscriptions: subscribedEvents,
@@ -708,10 +706,12 @@ func (i instances) ForceReconnect(instanceId string, number string) error {
 
 	if instance.Proxy != "" || i.config.ProxyHost != "" {
 		var proxyConfig ProxyConfig
-		err := json.Unmarshal([]byte(instance.Proxy), &proxyConfig)
-		if err != nil {
-			i.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error unmarshalling proxy config: %v", instance.Id, err)
-			return err
+		if instance.Proxy != "" {
+			err := json.Unmarshal([]byte(instance.Proxy), &proxyConfig)
+			if err != nil {
+				i.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error unmarshalling proxy config: %v", instance.Id, err)
+				return err
+			}
 		}
 
 		if proxyConfig.Host != "" || i.config.ProxyHost != "" {
@@ -723,15 +723,18 @@ func (i instances) ForceReconnect(instanceId string, number string) error {
 		client := i.clientPointer[instance.Id]
 		client.Disconnect()
 
-		select {
-		case i.killChannel[instance.Id] <- true:
-		case <-time.After(5 * time.Second):
+		if killChan := i.killChannel[instance.Id]; killChan != nil {
+			select {
+			case killChan <- true:
+			case <-time.After(5 * time.Second):
+			}
 		}
 
 		delete(i.clientPointer, instance.Id)
 		delete(i.killChannel, instance.Id)
 	}
 
+	i.killChannel[instance.Id] = make(chan bool)
 	go i.whatsmeowService.StartClient(clientData)
 
 	time.Sleep(2 * time.Second)
