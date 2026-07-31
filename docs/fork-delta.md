@@ -67,19 +67,33 @@ Preserved from Expertsa:
 - The legacy `product_list` transport-node behavior for lists is preserved from
   the pre-official-`whatsmeow` fork delta.
 
-Deferred for a separate decision:
+Ported 2026-07-31 (re-evaluation after the passkey/security pass above):
 
-- Whether to port upstream `ForwardingScore` behavior.
-- Whether to replace or merge local thumbnail helpers with upstream's JPEG/PDF
-  thumbnail helper style.
-- Message pin support (`/message/pin` and `/message/unpin`) is not part of the
-  passkey/security release acceptance yet. The API endpoint commit exists in the
-  root repository, but the transport-level `edit=2` experiment was made only in
-  the local `whatsmeow-lib` directory. Because the root `go.mod` intentionally
-  uses official `go.mau.fi/whatsmeow` without `replace`, that local library patch
-  is not included in the API build. Revisit later via upstream support, a
-  versioned fork, or an explicit temporary `replace`; do not silently return to
-  the local `whatsmeow-lib` while the main goal remains passkey compatibility.
+- `ForwardingScore`: `SendDataStruct`, `TextStruct`, and `MediaStruct` gained an
+  optional `ForwardingScore *uint32` field. `SendMessage` applies it (plus
+  `ContextInfo.IsForwarded`) to whichever message type's `ContextInfo` was set,
+  mirroring upstream's block exactly (same message types upstream covers;
+  upstream does not apply it to `ButtonsMessage` either, so neither do we).
+  Exposed publicly only on `/send/text` and `/send/media`, matching upstream.
+- PDF document thumbnails: added `(s *sendService) makePDFThumbnail`, a
+  method-form port of upstream's standalone `makePDFThumbnail` that shells out
+  to `pdftoppm` (poppler-utils) to rasterize page 1, then reuses the existing
+  local `resizeThumbnail` helper for the final JPEG encode instead of also
+  porting upstream's separate `makeJPEGThumbnail` (redundant with
+  `resizeThumbnail`, which already covers the generic-image-thumbnail case).
+  Wired into the `document` case of both `SendMediaFile` and `SendMediaUrl`
+  when `mimeType == "application/pdf"`. `Dockerfile` final stage now installs
+  `poppler-utils` for `pdftoppm`.
+- Message pin support (`/message/pin` and `/message/unpin`): the blocking
+  assumption behind the original deferral -- that only the abandoned local
+  `whatsmeow-lib` fork could send `PinInChatMessage`/`edit=2` -- no longer
+  holds. The official `go.mau.fi/whatsmeow` version already pinned in `go.mod`
+  (`v0.0.0-20260630180629-b572e5bcb92b`) detects `PinInChatMessage` natively in
+  `send.go`'s `getEditAttribute`. The endpoint code (`793d01d`) was already
+  correct against the official client; no code changes were needed. Still
+  unverified: an actual WhatsApp smoke test confirming the message shows
+  pinned on a phone. See
+  `_evo-output/implementation-artifacts/upstream-0.7.2-meta-security/deferred-work.md`.
 
 ## Sensitive Files
 
