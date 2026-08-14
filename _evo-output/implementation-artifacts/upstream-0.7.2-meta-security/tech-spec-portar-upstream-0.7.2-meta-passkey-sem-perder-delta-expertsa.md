@@ -2,7 +2,7 @@
 title: 'Portar upstream 0.7.2 Meta/passkey sem perder delta Expertsa'
 type: 'feature'
 created: '2026-07-06'
-status: 'in-progress'
+status: 'done'
 baseline_commit: '59f01015705de30fd468b6879c82e1e904fffeb5'
 context: []
 ---
@@ -60,6 +60,8 @@ context: []
 - [x] `cmd/evolution-go/main.go`, `pkg/instance/service/instance_service.go` -- registrar rotas e portar pair/status/passkey QR info -- expor o fluxo ao manager/API.
 - [x] `pkg/sendMessage/service/send_service.go` -- reconciliar o WIP com a abordagem 0.7.2 para mensagens interativas -- evitar regressao em botoes/listas/carrossel.
 - [x] Executar build/testes possiveis -- confirmar compilacao e unidade basica dentro dos limites atuais do ambiente.
+- [x] `pkg/whatsmeow/service/{whatsmeow.go,receipt.go,receipt_test.go}` -- rejeitar recibos sem message ID antes de persistencia, deduplicacao ou webhook.
+- [x] `Dockerfile`, `README.md`, `.gitignore`, `whatsmeow-lib` -- remover o clone local obsoleto e manter somente a dependencia oficial fixada no `go.mod`.
 
 **Acceptance Criteria:**
 - Given a branch with commit `59f0101`, when integration commits are reviewed, then local button-rendering WIP remains reachable and distinguishable from upstream ports.
@@ -109,6 +111,17 @@ context: []
   sem `og:image`: agora tambem busca imagens em JSON-LD, `link rel=preload`
   com `as=image`, `img src` e `srcset`, evitando escolher URLs de pagina como
   se fossem imagem.
+- 2026-08-13: Recibos agrupados sem `message ID` agora sao descartados com log
+  diagnostico antes de persistencia, deduplicacao e webhook; IDs vazios em
+  listas mistas sao filtrados. O clone local `whatsmeow-lib`, que nao fazia
+  parte do build, foi removido junto das instrucoes e do `COPY` obsoletos. Seu
+  historico completo foi preservado em
+  `_evo-output/backups/whatsmeow-lib-before-removal-20260813.bundle`.
+- 2026-08-13: Revisao adversarial ampliou o filtro para rejeitar whitespace e
+  IDs duplicados, registrar degradacao parcial, preservar o evento original e
+  processar todos os IDs de recibos `Delivered` sem perder IDs novos quando um
+  anterior ja estava deduplicado. A segunda passagem de edge cases e auditoria
+  de aceitacao nao encontrou violacoes remanescentes.
 
 ## Design Notes
 
@@ -122,6 +135,9 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
 - `go test ./pkg/sendMessage/service/...` -- attempted after reconciliation; blocked by the same `github.com/chai2010/webp`/CGO environment issue before package validation.
 - `go build ./cmd/evolution-go` -- expected: compile succeeds with official whatsmeow dependency.
 - `git diff --check` -- passed on 2026-07-06 after each `send_service.go` step.
+- `go test ./pkg/whatsmeow/service` -- passed on 2026-08-13 after adding receipt ID validation.
+- `git bundle verify _evo-output/backups/whatsmeow-lib-before-removal-20260813.bundle` -- passed on 2026-08-13; bundle records complete history.
+- `go test ./cmd/evolution-go` -- blocked on 2026-08-13 by the pre-existing Windows/CGO `github.com/chai2010/webp` build failure; Docker installs the required native libraries.
 
 **Manual checks (if no CLI):**
 - Review QR normal, passkey-required pairing, pair-phone error handling, and button/list/carousel payload shape before release.

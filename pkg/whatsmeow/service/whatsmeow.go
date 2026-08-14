@@ -1653,14 +1653,42 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			return
 		}
 
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Receipt received with ID: %s from %s with type %s", mycli.userID, evt.MessageIDs[0], evt.SourceString(), evt.Type)
+		messageIDs := validReceiptMessageIDs(evt.MessageIDs)
+		if len(messageIDs) == 0 {
+			mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn(
+				"[%s] Ignoring receipt without message ID from %s with type %s (received IDs: %d)",
+				mycli.userID,
+				evt.SourceString(),
+				evt.Type,
+				len(evt.MessageIDs),
+			)
+			return
+		}
+		if discardedCount := len(evt.MessageIDs) - len(messageIDs); discardedCount > 0 {
+			mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn(
+				"[%s] Receipt from %s contained invalid or duplicate message IDs: discarded %d of %d",
+				mycli.userID,
+				evt.SourceString(),
+				discardedCount,
+				len(evt.MessageIDs),
+			)
+		}
+
+		// Keep the webhook payload consistent with the IDs accepted for persistence
+		// and deduplication. Grouped receipts may contain empty IDs when WhatsApp
+		// omits the participants key attribute.
+		sanitizedReceipt := *evt
+		sanitizedReceipt.MessageIDs = messageIDs
+		postMap["data"] = &sanitizedReceipt
+
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Receipt received with ID: %s from %s with type %s", mycli.userID, messageIDs[0], evt.SourceString(), evt.Type)
 
 		if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
 
 			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message was read by %s", mycli.userID, evt.SourceString())
 			if evt.Type == types.ReceiptTypeRead {
 				postMap["state"] = "Read"
-				for _, v := range evt.MessageIDs {
+				for _, v := range messageIDs {
 					messageKey := fmt.Sprintf("%s_%s_%s_%s", mycli.userID, v, evt.SourceString(), "Read")
 					if _, found := mycli.processedMessages.Get(messageKey); found {
 						mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message duplicated ignored: %s", mycli.userID, v)
@@ -1686,26 +1714,32 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		} else if evt.Type == types.ReceiptTypeDelivered {
 			postMap["state"] = "Delivered"
 
-			var message message_model.Message
+			processedCount := 0
+			for _, messageID := range messageIDs {
+				messageKey := fmt.Sprintf("%s_%s_%s_%s", mycli.userID, messageID, evt.SourceString(), "Delivered")
+				if _, found := mycli.processedMessages.Get(messageKey); found {
+					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message duplicated ignored: %s", mycli.userID, messageID)
+					continue
+				}
 
-			message.MessageID = evt.MessageIDs[0]
-			message.Timestamp = evt.Timestamp.Format("2006-01-02 15:04:05")
-			message.Status = "Delivered"
-			message.Source = evt.Chat.ToNonAD().User
+				mycli.processedMessages.Set(messageKey, true, 30*time.Minute)
+				processedCount++
 
-			messageKey := fmt.Sprintf("%s_%s_%s_%s", mycli.userID, evt.MessageIDs[0], evt.SourceString(), "Delivered")
-			if _, found := mycli.processedMessages.Get(messageKey); found {
-				mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message duplicated ignored: %s", mycli.userID, evt.MessageIDs[0])
+				message := message_model.Message{
+					MessageID: messageID,
+					Timestamp: evt.Timestamp.Format("2006-01-02 15:04:05"),
+					Status:    "Delivered",
+					Source:    evt.Chat.ToNonAD().User,
+				}
+				if mycli.config.DatabaseSaveMessages {
+					go mycli.messageRepository.InsertMessage(message)
+				}
+			}
+			if processedCount == 0 {
 				return
 			}
 
-			mycli.processedMessages.Set(messageKey, true, 30*time.Minute)
-
-			if mycli.config.DatabaseSaveMessages {
-				go mycli.messageRepository.InsertMessage(message)
-			}
-
-			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message delivered to %s", mycli.userID, evt.SourceString())
+			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] %d message(s) delivered to %s", mycli.userID, processedCount, evt.SourceString())
 		} else {
 			return
 		}
