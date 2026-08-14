@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"google.golang.org/protobuf/proto"
 )
@@ -103,6 +104,81 @@ func TestBuildCTAButtonMessageOmitsEmptyFooterAndExtraFields(t *testing.T) {
 	}
 	if interactive.GetHeader() != nil || interactive.GetContextInfo() != nil {
 		t.Fatal("lean CTA payload must omit header and internal context info")
+	}
+}
+
+func TestBuildButtonAdditionalNodes(t *testing.T) {
+	tests := []struct {
+		name           string
+		hasPix         bool
+		hasCTA         bool
+		number         string
+		wantNativeFlow string
+		wantBot        bool
+	}{
+		{
+			name:           "CTA individual omits bot",
+			hasCTA:         true,
+			number:         "5511999999999@s.whatsapp.net",
+			wantNativeFlow: "mixed",
+		},
+		{
+			name:           "CTA group omits bot",
+			hasCTA:         true,
+			number:         "120363000000000000@g.us",
+			wantNativeFlow: "mixed",
+		},
+		{
+			name:           "Pix individual preserves bot",
+			hasPix:         true,
+			number:         "5511999999999@s.whatsapp.net",
+			wantNativeFlow: "payment_info",
+			wantBot:        true,
+		},
+		{
+			name:           "non-CTA individual preserves bot",
+			number:         "5511999999999@s.whatsapp.net",
+			wantNativeFlow: "mixed",
+			wantBot:        true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodes := *buildButtonAdditionalNodes(tt.hasPix, tt.hasCTA, tt.number)
+			if len(nodes) == 0 || nodes[0].Tag != "biz" {
+				t.Fatalf("first node = %#v, want biz", nodes)
+			}
+
+			interactiveNodes, ok := nodes[0].Content.([]waBinary.Node)
+			if !ok || len(interactiveNodes) != 1 || interactiveNodes[0].Tag != "interactive" {
+				t.Fatalf("biz content = %#v, want one interactive node", nodes[0].Content)
+			}
+			if interactiveNodes[0].Attrs["type"] != "native_flow" || interactiveNodes[0].Attrs["v"] != "1" {
+				t.Fatalf("interactive attrs = %#v", interactiveNodes[0].Attrs)
+			}
+
+			nativeFlowNodes, ok := interactiveNodes[0].Content.([]waBinary.Node)
+			if !ok || len(nativeFlowNodes) != 1 || nativeFlowNodes[0].Tag != "native_flow" {
+				t.Fatalf("interactive content = %#v, want one native_flow node", interactiveNodes[0].Content)
+			}
+			if nativeFlowNodes[0].Attrs["name"] != tt.wantNativeFlow {
+				t.Fatalf("native flow name = %v, want %q", nativeFlowNodes[0].Attrs["name"], tt.wantNativeFlow)
+			}
+
+			gotBot := false
+			for _, node := range nodes {
+				if node.Tag == "bot" {
+					gotBot = true
+					if node.Attrs["biz_bot"] != "1" {
+						t.Fatalf("bot attrs = %#v, want biz_bot=1", node.Attrs)
+					}
+				}
+			}
+			if gotBot != tt.wantBot {
+				t.Fatalf("bot node present = %v, want %v; nodes = %#v", gotBot, tt.wantBot, nodes)
+			}
+		})
 	}
 }
 

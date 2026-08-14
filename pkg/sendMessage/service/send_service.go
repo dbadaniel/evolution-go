@@ -2312,6 +2312,40 @@ func buildCTAButtonMessage(data *ButtonStruct, buttons []*waE2E.InteractiveMessa
 	}
 }
 
+func buildButtonAdditionalNodes(hasPix, hasCTA bool, number string) *[]waBinary.Node {
+	nativeFlowName := "mixed"
+	if hasPix {
+		nativeFlowName = "payment_info"
+	}
+
+	bizNodes := []waBinary.Node{
+		{
+			Tag: "biz",
+			Content: []waBinary.Node{{
+				Tag: "interactive",
+				Attrs: waBinary.Attrs{
+					"type": "native_flow",
+					"v":    "1",
+				},
+				Content: []waBinary.Node{{
+					Tag: "native_flow",
+					Attrs: waBinary.Attrs{
+						"name": nativeFlowName,
+					},
+				}},
+			}},
+		},
+	}
+	if !hasCTA && !strings.Contains(number, "@g.us") {
+		bizNodes = append(bizNodes, waBinary.Node{
+			Tag:   "bot",
+			Attrs: waBinary.Attrs{"biz_bot": "1"},
+		})
+	}
+
+	return &bizNodes
+}
+
 func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.Instance) (*MessageSendStruct, error) {
 	client, err := s.ensureClientConnected(instance.Id)
 	if err != nil {
@@ -2559,39 +2593,7 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 
 	var additionalNodes *[]waBinary.Node
 	if !hasReply || hasOtherTypes || hasPix {
-		var nativeFlowName string
-		switch {
-		case hasPix:
-			nativeFlowName = "payment_info"
-		default:
-			nativeFlowName = "mixed"
-		}
-
-		bizNodes := []waBinary.Node{
-			{
-				Tag: "biz",
-				Content: []waBinary.Node{{
-					Tag: "interactive",
-					Attrs: waBinary.Attrs{
-						"type": "native_flow",
-						"v":    "1",
-					},
-					Content: []waBinary.Node{{
-						Tag: "native_flow",
-						Attrs: waBinary.Attrs{
-							"name": nativeFlowName,
-						},
-					}},
-				}},
-			},
-		}
-		if !strings.Contains(data.Number, "@g.us") {
-			bizNodes = append(bizNodes, waBinary.Node{
-				Tag:   "bot",
-				Attrs: waBinary.Attrs{"biz_bot": "1"},
-			})
-		}
-		additionalNodes = &bizNodes
+		additionalNodes = buildButtonAdditionalNodes(hasPix, hasOtherTypes, data.Number)
 	}
 
 	messaged, err := s.SendMessage(instance, msg, msgType, &SendDataStruct{

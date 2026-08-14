@@ -124,6 +124,10 @@ Ported selectively from `NathanAshford/evolution-go-custom` for CTA error 473:
   `InteractiveMessage` now contains only `Body`, `Footer`, and
   `NativeFlowMessage`. The redundant `Header` and empty internal `ContextInfo`
   were removed because that larger payload was rejected by WhatsApp with 473.
+- A real send with a single URL CTA was still rejected with 473 after slimming
+  the protobuf payload. CTA transport now keeps `biz/native_flow/mixed` but omits
+  `bot biz_bot=1`, avoiding a bot capability that the linked account may not
+  have. Pix keeps its existing `biz/payment_info` and `bot` nodes.
 - Pix and reply button composition remain unchanged.
 
 ## Sensitive Files
