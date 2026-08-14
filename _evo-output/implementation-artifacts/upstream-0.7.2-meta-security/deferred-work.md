@@ -19,3 +19,12 @@
   flicker.
 - Validacao futura: executar smoke visual na tela `/manager/instances` por mais
   de dois ciclos de polling, incluindo falha e recuperacao da API.
+
+## Link metadata HTML response limit
+
+- Status: preexistente, identificado durante a revisao do preview de links em
+  2026-08-14.
+- Pendencia: `fetchHTMLLinkMetadata` entrega o corpo HTML diretamente ao parser
+  sem um limite de leitura. Avaliar um teto suficientemente alto e um fallback
+  que preserve paginas validas grandes, sem reintroduzir a regressao de rejeitar
+  todo HTML acima do limite pequeno usado exclusivamente pelo oEmbed.

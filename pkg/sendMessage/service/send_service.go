@@ -24,6 +24,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	_ "golang.org/x/image/webp"
 
@@ -498,13 +500,80 @@ func (s *sendService) checkSingleUserExists(client *whatsmeow.Client, phone stri
 }
 
 func findURL(text string) string {
-	urlRegex := `http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+`
-	re := regexp.MustCompile(urlRegex)
-	urls := re.FindAllString(text, -1)
+	urls := findURLs(text)
 	if len(urls) > 0 {
 		return urls[0]
 	}
 	return ""
+}
+
+func findURLs(text string) []string {
+	schemeRegex := regexp.MustCompile(`(?i)https?://`)
+	matches := schemeRegex.FindAllStringIndex(text, -1)
+	urls := make([]string, 0, len(matches))
+	consumedUntil := 0
+	for _, match := range matches {
+		if match[0] < consumedUntil {
+			continue
+		}
+		end := match[1]
+		for end < len(text) {
+			char, size := utf8.DecodeRuneInString(text[end:])
+			if isDiscoveredURLTerminator(char) {
+				break
+			}
+			end += size
+		}
+		rawCandidate := text[match[0]:end]
+		consumedUntil = end
+		withoutSentencePunctuation := strings.TrimRight(rawCandidate, ".,;!")
+		candidates := []string{
+			trimDiscoveredURLWrapper(text, match[0], withoutSentencePunctuation),
+			trimDiscoveredURLWrapper(text, match[0], rawCandidate),
+			withoutSentencePunctuation,
+			rawCandidate,
+		}
+		for _, candidate := range candidates {
+			if normalized := normalizeAbsoluteHTTPURL(candidate); normalized != "" {
+				alreadyAdded := false
+				for _, existing := range urls {
+					if existing == normalized {
+						alreadyAdded = true
+						break
+					}
+				}
+				if !alreadyAdded {
+					urls = append(urls, normalized)
+				}
+			}
+		}
+	}
+	return urls
+}
+
+func isDiscoveredURLTerminator(char rune) bool {
+	if unicode.IsSpace(char) || unicode.IsControl(char) || unicode.In(char, unicode.Cf) {
+		return true
+	}
+	if char == '<' || char == '>' || char == '"' {
+		return true
+	}
+	return char > unicode.MaxASCII && (unicode.IsPunct(char) || unicode.IsSymbol(char))
+}
+
+func trimDiscoveredURLWrapper(text string, start int, candidate string) string {
+	if start > 0 && candidate != "" {
+		before, _ := utf8.DecodeLastRuneInString(text[:start])
+		last, lastSize := utf8.DecodeLastRuneInString(candidate)
+		matchingWrapper := (before == '(' && last == ')') ||
+			(before == '[' && last == ']') ||
+			(before == '{' && last == '}') ||
+			(before == '\'' && last == '\'')
+		if matchingWrapper {
+			candidate = candidate[:len(candidate)-lastSize]
+		}
+	}
+	return candidate
 }
 
 func (s *sendService) SendText(data *TextStruct, instance *instance_model.Instance) (*MessageSendStruct, error) {
@@ -565,8 +634,128 @@ func fetchLinkMetadata(targetUrl string) (string, string, string, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
+	return fetchLinkMetadataWithClient(targetUrl, client)
+}
 
-	req, err := http.NewRequest("GET", targetUrl, nil)
+const maxLinkMetadataResponseBytes = 2 << 20
+
+type httpDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+type youtubeOEmbedResponse struct {
+	Title        string `json:"title"`
+	AuthorName   string `json:"author_name"`
+	ThumbnailURL string `json:"thumbnail_url"`
+}
+
+func normalizeAbsoluteHTTPURL(rawURL string) string {
+	if strings.ContainsAny(rawURL, "\r\n") {
+		return ""
+	}
+	normalized := strings.TrimSpace(rawURL)
+	for _, char := range normalized {
+		if unicode.IsSpace(char) || unicode.IsControl(char) || unicode.In(char, unicode.Cf) {
+			return ""
+		}
+	}
+	parsed, err := url.Parse(normalized)
+	if err != nil {
+		return ""
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if parsed.Hostname() == "" || parsed.User != nil || (scheme != "http" && scheme != "https") {
+		return ""
+	}
+	return normalized
+}
+
+func textContainsExactURL(text, targetURL string) bool {
+	for _, candidate := range findURLs(text) {
+		if candidate == targetURL {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveLinkTextAndMatchedURL(text, explicitURL string) (string, string) {
+	matchedText := normalizeAbsoluteHTTPURL(explicitURL)
+	if matchedText == "" {
+		return text, findURL(text)
+	}
+	if textContainsExactURL(text, matchedText) {
+		return text, matchedText
+	}
+	if strings.TrimSpace(text) == "" {
+		return matchedText, matchedText
+	}
+	return text + "\n" + matchedText, matchedText
+}
+
+func isYouTubeURL(rawURL string) bool {
+	normalized := normalizeAbsoluteHTTPURL(rawURL)
+	if normalized == "" {
+		return false
+	}
+	parsed, _ := url.Parse(normalized)
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	return host == "youtube.com" || strings.HasSuffix(host, ".youtube.com") || host == "youtu.be"
+}
+
+func readLimitedOEmbedResponse(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxLinkMetadataResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxLinkMetadataResponseBytes {
+		return nil, fmt.Errorf("metadata response exceeds %d bytes", maxLinkMetadataResponseBytes)
+	}
+	return data, nil
+}
+
+func fetchYouTubeOEmbedMetadata(ctx context.Context, targetURL string, client httpDoer) (string, string, string, error) {
+	endpoint, err := url.Parse("https://www.youtube.com/oembed")
+	if err != nil {
+		return "", "", "", err
+	}
+	query := endpoint.Query()
+	query.Set("url", targetURL)
+	query.Set("format", "json")
+	endpoint.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return "", "", "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", "", "", fmt.Errorf("youtube oEmbed returned status %d", resp.StatusCode)
+	}
+
+	body, err := readLimitedOEmbedResponse(resp.Body)
+	if err != nil {
+		return "", "", "", err
+	}
+	var metadata youtubeOEmbedResponse
+	if err := json.Unmarshal(body, &metadata); err != nil {
+		return "", "", "", err
+	}
+	metadata.Title = strings.TrimSpace(metadata.Title)
+	metadata.AuthorName = strings.TrimSpace(metadata.AuthorName)
+	metadata.ThumbnailURL = normalizeAbsoluteHTTPURL(metadata.ThumbnailURL)
+	if metadata.Title == "" || metadata.AuthorName == "" || metadata.ThumbnailURL == "" {
+		return "", "", "", errors.New("youtube oEmbed returned incomplete metadata")
+	}
+	return metadata.Title, metadata.AuthorName, metadata.ThumbnailURL, nil
+}
+
+func fetchHTMLLinkMetadata(ctx context.Context, targetUrl string, client httpDoer) (string, string, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetUrl, nil)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -691,7 +880,11 @@ func fetchLinkMetadata(targetUrl string) (string, string, string, error) {
 
 	// Resolver URLs relativas de imagem
 	if imgURL != "" {
-		if base, err := url.Parse(targetUrl); err == nil {
+		baseURL := targetUrl
+		if resp.Request != nil && resp.Request.URL != nil {
+			baseURL = resp.Request.URL.String()
+		}
+		if base, err := url.Parse(baseURL); err == nil {
 			if img, err := url.Parse(imgURL); err == nil {
 				imgURL = base.ResolveReference(img).String()
 			}
@@ -699,6 +892,44 @@ func fetchLinkMetadata(targetUrl string) (string, string, string, error) {
 	}
 
 	return strings.TrimSpace(title), strings.TrimSpace(description), imgURL, nil
+}
+
+func fetchLinkMetadataWithClient(targetUrl string, client httpDoer) (string, string, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var oEmbedErr error
+	if isYouTubeURL(targetUrl) {
+		oEmbedCtx, oEmbedCancel := context.WithTimeout(ctx, 3*time.Second)
+		title, description, imgURL, err := fetchYouTubeOEmbedMetadata(oEmbedCtx, targetUrl, client)
+		oEmbedCancel()
+		if err == nil {
+			return title, description, imgURL, nil
+		}
+		oEmbedErr = err
+	}
+
+	title, description, imgURL, err := fetchHTMLLinkMetadata(ctx, targetUrl, client)
+	if err != nil && oEmbedErr != nil {
+		return "", "", "", errors.Join(
+			fmt.Errorf("youtube oEmbed failed: %w", oEmbedErr),
+			fmt.Errorf("HTML fallback failed: %w", err),
+		)
+	}
+	return title, description, imgURL, err
+}
+
+func mergeLinkMetadata(data LinkStruct, title, description, imgURL string) LinkStruct {
+	if data.Title == "" {
+		data.Title = title
+	}
+	if data.Description == "" {
+		data.Description = description
+	}
+	if data.ImgUrl == "" {
+		data.ImgUrl = imgURL
+	}
+	return data
 }
 
 func findJSONLDImage(value interface{}) string {
@@ -1019,6 +1250,10 @@ func buildLinkExtendedTextMessage(data *LinkStruct, matchedText string, thumbnai
 }
 
 func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_model.Instance, maxRetries int) (*MessageSendStruct, error) {
+	workingData := *data
+	resolvedText, matchedText := resolveLinkTextAndMatchedURL(workingData.Text, workingData.Url)
+	workingData.Text = resolvedText
+
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] SendLink attempt %d/%d", instance.Id, attempt, maxRetries)
 
@@ -1030,26 +1265,13 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 			continue
 		}
 
-		matchedText := data.Url
-		if matchedText == "" {
-			matchedText = findURL(data.Text)
-		}
-
 		if matchedText != "" {
 			// Só buscar metadados se os campos estiverem vazios
-			if data.Title == "" || data.Description == "" || data.ImgUrl == "" {
+			if workingData.Title == "" || workingData.Description == "" || workingData.ImgUrl == "" {
 				title, description, imgUrl, err := fetchLinkMetadata(matchedText)
 				if err == nil {
-					if data.Title == "" {
-						data.Title = title
-					}
-					if data.Description == "" {
-						data.Description = description
-					}
-					if data.ImgUrl == "" {
-						data.ImgUrl = imgUrl
-					}
-					s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Link metadata fetched: url=%s title=%q descriptionLen=%d imgUrl=%q", instance.Id, matchedText, data.Title, len(data.Description), data.ImgUrl)
+					workingData = mergeLinkMetadata(workingData, title, description, imgUrl)
+					s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Link metadata fetched: url=%s title=%q descriptionLen=%d imgUrl=%q", instance.Id, matchedText, workingData.Title, len(workingData.Description), workingData.ImgUrl)
 				} else {
 					s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Failed to fetch link metadata for %s: %v", instance.Id, matchedText, err)
 				}
@@ -1058,10 +1280,10 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 
 		var fileData []byte
 		var thumbnailWidth, thumbnailHeight uint32
-		if data.ImgUrl != "" {
-			s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Downloading link preview image: %s", instance.Id, data.ImgUrl)
+		if workingData.ImgUrl != "" {
+			s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Downloading link preview image: %s", instance.Id, workingData.ImgUrl)
 			// Download da imagem da miniatura com User-Agent para evitar bloqueios em produção
-			imgReq, err := http.NewRequest("GET", data.ImgUrl, nil)
+			imgReq, err := http.NewRequest("GET", workingData.ImgUrl, nil)
 			if err == nil {
 				imgReq.Header.Set("User-Agent", "WhatsApp/2.24.8.85")
 				imgReq.Header.Set("Accept", "image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
@@ -1074,7 +1296,7 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 					s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Link preview image downloaded: contentType=%q bytes=%d", instance.Id, imgResp.Header.Get("Content-Type"), len(rawImageData))
 					fileData, thumbnailWidth, thumbnailHeight = s.buildLinkPreviewThumbnail(rawImageData, 200)
 					if fileData == nil {
-						s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Link preview image ignored because it could not be converted to JPEG thumbnail: %s", instance.Id, data.ImgUrl)
+						s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Link preview image ignored because it could not be converted to JPEG thumbnail: %s", instance.Id, workingData.ImgUrl)
 					}
 				} else if err != nil {
 					s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Failed to download link preview image: %v", instance.Id, err)
@@ -1082,24 +1304,24 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 					s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Failed to download link preview image: status %d", instance.Id, imgResp.StatusCode)
 				}
 			} else {
-				s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Invalid link preview image URL %q: %v", instance.Id, data.ImgUrl, err)
+				s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Invalid link preview image URL %q: %v", instance.Id, workingData.ImgUrl, err)
 			}
 		} else {
 			s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Link preview image URL is empty after metadata fetch for %s", instance.Id, matchedText)
 		}
 
 		msg := &waE2E.Message{
-			ExtendedTextMessage: buildLinkExtendedTextMessage(data, matchedText, fileData, thumbnailWidth, thumbnailHeight),
+			ExtendedTextMessage: buildLinkExtendedTextMessage(&workingData, matchedText, fileData, thumbnailWidth, thumbnailHeight),
 		}
 
 		message, err := s.SendMessage(instance, msg, "ExtendedTextMessage", &SendDataStruct{
-			Id:           data.Id,
-			Number:       data.Number,
-			Quoted:       data.Quoted,
-			Delay:        data.Delay,
-			MentionAll:   data.MentionAll,
-			MentionedJID: data.MentionedJID,
-			FormatJid:    data.FormatJid,
+			Id:           workingData.Id,
+			Number:       workingData.Number,
+			Quoted:       workingData.Quoted,
+			Delay:        workingData.Delay,
+			MentionAll:   workingData.MentionAll,
+			MentionedJID: workingData.MentionedJID,
+			FormatJid:    workingData.FormatJid,
 		})
 
 		if err != nil {
