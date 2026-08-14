@@ -179,10 +179,16 @@ make docker-build
 # 3. Testar localmente
 make docker-run
 
-# 4. Se tudo ok, fazer tag e push
-docker tag evolution-go:latest seu-registry/evolution-go:v1.0.0
-docker push seu-registry/evolution-go:v1.0.0
+# 4. Se tudo ok, fazer build, tag e push para o repositório padrão
+make docker-publish
+
+# Opcional: sobrescrever repositório e tag
+make docker-publish DOCKER_REPOSITORY=seu-registry/evolution-go DOCKER_TAG=v1.0.0
 ```
+
+O alvo valida versão, repositório e tag antes de iniciar o build. É necessário
+estar autenticado no registry (`docker login`). `make docker-build` continua
+somente construindo a imagem local, sem publicar.
 
 ### Debug e Profiling
 

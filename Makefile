@@ -1,11 +1,16 @@
-.PHONY: help dev run build test clean swagger deps docker-build docker-run install setup migrate-up migrate-down logs
+.PHONY: help dev run build test clean swagger deps docker-build docker-publish docker-publish-validate docker-run install setup migrate-up migrate-down logs
 
 # Configurações
 APP_NAME=evolution-go
 MAIN_PATH=cmd/evolution-go/main.go
 BUILD_DIR=build
 GO=go
-VERSION=$(shell grep -om1 "v[0-9].*" CHANGELOG.md)
+VERSION=$(shell grep -oEm1 '^## v[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | cut -d' ' -f2)
+PUBLISH_VERSION=$(patsubst 0.%,%,$(patsubst v%,%,$(VERSION)))
+DOCKER_REPOSITORY?=dbadaniel/expertsa
+DOCKER_TAG?=evolution-go$(PUBLISH_VERSION)
+DOCKER_IMAGE=$(DOCKER_REPOSITORY):$(DOCKER_TAG)
+SHELL_QUOTE=$(subst ','"'"',$(1))
 LDFLAGS=-ldflags "-X main.version=$(VERSION)"
 GOFLAGS=-v
 
@@ -162,6 +167,28 @@ docker-build: ## Build da imagem Docker
 	@echo "$(GREEN)🐳 Construindo imagem Docker...$(NC)"
 	docker build --build-arg VERSION=$(VERSION) -t $(APP_NAME):latest .
 	@echo "$(GREEN)✅ Imagem Docker construída$(NC)"
+
+docker-publish-validate:
+	@version='$(call SHELL_QUOTE,$(VERSION))'; \
+	repository='$(call SHELL_QUOTE,$(DOCKER_REPOSITORY))'; \
+	tag='$(call SHELL_QUOTE,$(DOCKER_TAG))'; \
+	if ! printf '%s\n' "$$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$'; then \
+		echo "$(RED)❌ VERSION inválida: $$version$(NC)"; exit 1; \
+	fi; \
+	if ! printf '%s\n' "$$repository" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)*$$'; then \
+		echo "$(RED)❌ DOCKER_REPOSITORY inválido: $$repository$(NC)"; exit 1; \
+	fi; \
+	if ! printf '%s\n' "$$tag" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$$'; then \
+		echo "$(RED)❌ DOCKER_TAG inválida: $$tag$(NC)"; exit 1; \
+	fi
+
+docker-publish: docker-publish-validate ## Build, tag e publica a imagem Docker
+	$(MAKE) docker-build
+	@printf "$(YELLOW)🏷️  Criando tag %s...$(NC)\n" '$(call SHELL_QUOTE,$(DOCKER_IMAGE))'
+	docker tag '$(call SHELL_QUOTE,$(APP_NAME):latest)' '$(call SHELL_QUOTE,$(DOCKER_IMAGE))'
+	@printf "$(GREEN)🚀 Publicando %s...$(NC)\n" '$(call SHELL_QUOTE,$(DOCKER_IMAGE))'
+	docker push '$(call SHELL_QUOTE,$(DOCKER_IMAGE))'
+	@printf "$(GREEN)✅ Imagem publicada: %s$(NC)\n" '$(call SHELL_QUOTE,$(DOCKER_IMAGE))'
 
 docker-run: ## Roda container Docker
 	@echo "$(GREEN)🐳 Iniciando container...$(NC)"
