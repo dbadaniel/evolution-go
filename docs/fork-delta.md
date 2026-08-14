@@ -116,6 +116,16 @@ Preserved Expertsa behavior during this port:
 - Local list transport, button workaround, link preview and pin endpoints were
   not replaced by their upstream counterparts.
 
+Ported selectively from `NathanAshford/evolution-go-custom` for CTA error 473:
+
+- CTA buttons (`url`, `call`, and `copy`) keep the existing native-flow button
+  parameters, `DocumentWithCaptionMessage`, `MessageSecret`, `MessageVersion=1`,
+  `MessageParamsJSON`, and `biz/mixed` transport nodes, but their nested
+  `InteractiveMessage` now contains only `Body`, `Footer`, and
+  `NativeFlowMessage`. The redundant `Header` and empty internal `ContextInfo`
+  were removed because that larger payload was rejected by WhatsApp with 473.
+- Pix and reply button composition remain unchanged.
+
 ## Sensitive Files
 
 - `pkg/sendMessage/service/send_service.go`

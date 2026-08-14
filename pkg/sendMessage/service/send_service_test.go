@@ -2,6 +2,7 @@ package send_service
 
 import (
 	"bytes"
+	"encoding/json"
 	"image"
 	"image/png"
 	"io"
@@ -13,6 +14,97 @@ import (
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestBuildCTAButtonMessageUsesLeanNativeFlowPayload(t *testing.T) {
+	buttonParams := []map[string]string{
+		{"display_text": "Site", "url": "https://example.com", "merchant_url": "https://example.com"},
+		{"display_text": "Ligar", "phone_number": "+5511999999999"},
+		{"display_text": "Copiar", "id": "coupon", "copy_code": "PROMO10"},
+	}
+	buttonNames := []string{"cta_url", "cta_call", "cta_copy"}
+	buttons := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, len(buttonNames))
+	for i := range buttonNames {
+		params, err := json.Marshal(buttonParams[i])
+		if err != nil {
+			t.Fatalf("marshal button params: %v", err)
+		}
+		paramsJSON := string(params)
+		buttons[i] = &waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+			Name:             proto.String(buttonNames[i]),
+			ButtonParamsJSON: &paramsJSON,
+		}
+	}
+
+	data := &ButtonStruct{
+		Title:       "Oferta",
+		Description: "Escolha uma acao",
+		Footer:      "Rodape",
+	}
+	messageParamsJSON := `{"from":"api","templateId":123}`
+	secret := bytes.Repeat([]byte{0x2a}, 32)
+
+	msg := buildCTAButtonMessage(data, buttons, messageParamsJSON, secret)
+	if msg.GetDocumentWithCaptionMessage() == nil || msg.GetDocumentWithCaptionMessage().GetMessage() == nil {
+		t.Fatal("CTA must be wrapped in DocumentWithCaptionMessage")
+	}
+	interactive := msg.GetDocumentWithCaptionMessage().GetMessage().GetInteractiveMessage()
+	if interactive == nil {
+		t.Fatal("CTA wrapper must contain InteractiveMessage")
+	}
+	if interactive.GetBody().GetText() != "*Oferta*\n\nEscolha uma acao\n" {
+		t.Fatalf("unexpected body: %q", interactive.GetBody().GetText())
+	}
+	if interactive.GetFooter().GetText() != data.Footer {
+		t.Fatalf("unexpected footer: %q", interactive.GetFooter().GetText())
+	}
+	if interactive.GetHeader() != nil {
+		t.Fatal("CTA payload must not contain InteractiveMessage.Header")
+	}
+	if interactive.GetContextInfo() != nil {
+		t.Fatal("CTA payload must not contain InteractiveMessage.ContextInfo")
+	}
+	nativeFlow := interactive.GetNativeFlowMessage()
+	if nativeFlow == nil || nativeFlow.GetMessageVersion() != 1 {
+		t.Fatal("CTA payload must contain NativeFlowMessage version 1")
+	}
+	if nativeFlow.GetMessageParamsJSON() != messageParamsJSON {
+		t.Fatalf("unexpected message params: %q", nativeFlow.GetMessageParamsJSON())
+	}
+	if len(nativeFlow.GetButtons()) != len(buttonNames) {
+		t.Fatalf("unexpected button count: %d", len(nativeFlow.GetButtons()))
+	}
+	for i, button := range nativeFlow.GetButtons() {
+		if button.GetName() != buttonNames[i] {
+			t.Fatalf("button %d name = %q, want %q", i, button.GetName(), buttonNames[i])
+		}
+		var gotParams map[string]string
+		if err := json.Unmarshal([]byte(button.GetButtonParamsJSON()), &gotParams); err != nil {
+			t.Fatalf("button %d params are invalid JSON: %v", i, err)
+		}
+		if len(gotParams) != len(buttonParams[i]) {
+			t.Fatalf("button %d params = %#v, want %#v", i, gotParams, buttonParams[i])
+		}
+		for key, want := range buttonParams[i] {
+			if gotParams[key] != want {
+				t.Fatalf("button %d param %q = %q, want %q", i, key, gotParams[key], want)
+			}
+		}
+	}
+	if !bytes.Equal(msg.GetMessageContextInfo().GetMessageSecret(), secret) {
+		t.Fatal("CTA payload must preserve MessageSecret")
+	}
+}
+
+func TestBuildCTAButtonMessageOmitsEmptyFooterAndExtraFields(t *testing.T) {
+	msg := buildCTAButtonMessage(&ButtonStruct{Title: "Oferta"}, nil, `{}`, []byte("secret"))
+	interactive := msg.GetDocumentWithCaptionMessage().GetMessage().GetInteractiveMessage()
+	if interactive.GetFooter() != nil {
+		t.Fatal("empty footer must be omitted for client compatibility")
+	}
+	if interactive.GetHeader() != nil || interactive.GetContextInfo() != nil {
+		t.Fatal("lean CTA payload must omit header and internal context info")
+	}
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

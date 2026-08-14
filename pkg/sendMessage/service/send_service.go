@@ -2278,6 +2278,40 @@ func mapKeyType(keyType string) string {
 	}
 }
 
+func buildCTAButtonMessage(data *ButtonStruct, buttons []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, messageParamsJSON string, msgSecret []byte) *waE2E.Message {
+	body := "*" + data.Title + "*"
+	if data.Description != "" {
+		body += "\n\n" + data.Description + "\n"
+	}
+
+	interactiveMessage := &waE2E.InteractiveMessage{
+		Body: &waE2E.InteractiveMessage_Body{
+			Text: &body,
+		},
+		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+				Buttons:           buttons,
+				MessageParamsJSON: &messageParamsJSON,
+				MessageVersion:    proto.Int32(1),
+			},
+		},
+	}
+	if data.Footer != "" {
+		interactiveMessage.Footer = &waE2E.InteractiveMessage_Footer{Text: &data.Footer}
+	}
+
+	return &waE2E.Message{
+		DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{
+				InteractiveMessage: interactiveMessage,
+			},
+		},
+		MessageContextInfo: &waE2E.MessageContextInfo{
+			MessageSecret: msgSecret,
+		},
+	}
+}
+
 func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.Instance) (*MessageSendStruct, error) {
 	client, err := s.ensureClientConnected(instance.Id)
 	if err != nil {
@@ -2444,43 +2478,6 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 			},
 		}
 	} else {
-		body := func() string {
-			t := "*" + data.Title + "*"
-			if data.Description != "" {
-				t += "\n\n" + data.Description + "\n"
-			}
-			return t
-		}()
-
-		interactiveMsg := &waE2E.InteractiveMessage{
-			Body: &waE2E.InteractiveMessage_Body{
-				Text: &body,
-			},
-			InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
-				NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
-					Buttons:           buttons,
-					MessageParamsJSON: &messageParamsJSON,
-					MessageVersion:    proto.Int32(1),
-				},
-			},
-			ContextInfo: &waE2E.ContextInfo{},
-		}
-
-		// Footer conditional - only add if not empty (iOS compatibility)
-		if data.Footer != "" {
-			interactiveMsg.Footer = &waE2E.InteractiveMessage_Footer{
-				Text: &data.Footer,
-			}
-		}
-
-		// Header with title
-		if data.Title != "" {
-			interactiveMsg.Header = &waE2E.InteractiveMessage_Header{
-				Title:              proto.String(data.Title),
-				HasMediaAttachment: proto.Bool(false),
-			}
-		}
-
 		if hasReply {
 			var replyButtons []*waE2E.ButtonsMessage_Button
 			for _, v := range data.Buttons {
@@ -2556,16 +2553,7 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 			}
 			msgType = "ButtonsMessage"
 		} else {
-			msg = &waE2E.Message{
-				DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
-					Message: &waE2E.Message{
-						InteractiveMessage: interactiveMsg,
-					},
-				},
-				MessageContextInfo: &waE2E.MessageContextInfo{
-					MessageSecret: msgSecret,
-				},
-			}
+			msg = buildCTAButtonMessage(data, buttons, messageParamsJSON, msgSecret)
 		}
 	}
 
