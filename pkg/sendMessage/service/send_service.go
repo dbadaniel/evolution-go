@@ -890,31 +890,33 @@ func (s *sendService) makePDFThumbnail(fileData []byte, maxWidth int) []byte {
 	return s.resizeThumbnail(out.Bytes(), maxWidth)
 }
 
-func (s *sendService) buildLinkPreviewThumbnail(data []byte, maxDim int) ([]byte, uint32, uint32) {
+func normalizeLinkPreviewThumbnail(data []byte, maxDim int) ([]byte, uint32, uint32, string, error) {
 	if len(data) == 0 {
-		return nil, 0, 0
+		return nil, 0, 0, "", nil
+	}
+	if maxDim < 1 {
+		maxDim = 1
 	}
 
 	src, format, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
-		s.loggerWrapper.GetLogger("").LogWarn("Discarding invalid link preview thumbnail: %v", err)
-		return nil, 0, 0
+		return nil, 0, 0, "", fmt.Errorf("decode link preview thumbnail: %w", err)
 	}
 
 	bounds := src.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
 	if w <= 0 || h <= 0 {
-		return nil, 0, 0
+		return nil, 0, 0, format, fmt.Errorf("invalid link preview thumbnail dimensions: %dx%d", w, h)
 	}
 
 	newW, newH := w, h
 	if w > maxDim || h > maxDim {
 		if w > h {
 			newW = maxDim
-			newH = (h * maxDim) / w
+			newH = max(1, (h*maxDim)/w)
 		} else {
 			newH = maxDim
-			newW = (w * maxDim) / h
+			newW = max(1, (w*maxDim)/h)
 		}
 	}
 
@@ -924,12 +926,24 @@ func (s *sendService) buildLinkPreviewThumbnail(data []byte, maxDim int) ([]byte
 
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 86}); err != nil {
-		s.loggerWrapper.GetLogger("").LogWarn("Failed to normalize link preview thumbnail to JPEG: %v", err)
+		return nil, 0, 0, format, fmt.Errorf("encode link preview thumbnail as JPEG: %w", err)
+	}
+
+	return buf.Bytes(), uint32(newW), uint32(newH), format, nil
+}
+
+func (s *sendService) buildLinkPreviewThumbnail(data []byte, maxDim int) ([]byte, uint32, uint32) {
+	thumbnail, width, height, format, err := normalizeLinkPreviewThumbnail(data, maxDim)
+	if err != nil {
+		s.loggerWrapper.GetLogger("").LogWarn("Discarding invalid link preview thumbnail: %v", err)
+		return nil, 0, 0
+	}
+	if thumbnail == nil {
 		return nil, 0, 0
 	}
 
-	s.loggerWrapper.GetLogger("").LogInfo("Link preview thumbnail normalized from %d to %d bytes (format: %s)", len(data), buf.Len(), format)
-	return buf.Bytes(), uint32(newW), uint32(newH)
+	s.loggerWrapper.GetLogger("").LogInfo("Link preview thumbnail normalized from %d to %d bytes (format: %s)", len(data), len(thumbnail), format)
+	return thumbnail, width, height
 }
 
 func (s *sendService) getVideoThumbnail(data []byte) []byte {
@@ -978,6 +992,30 @@ func (s *sendService) getVideoThumbnail(data []byte) []byte {
 
 func (s *sendService) SendLink(data *LinkStruct, instance *instance_model.Instance) (*MessageSendStruct, error) {
 	return s.sendLinkWithRetry(data, instance, 3)
+}
+
+func buildLinkExtendedTextMessage(data *LinkStruct, matchedText string, thumbnail []byte, thumbnailWidth, thumbnailHeight uint32) *waE2E.ExtendedTextMessage {
+	previewType := waE2E.ExtendedTextMessage_PLACEHOLDER
+	if len(thumbnail) > 0 && thumbnailWidth > 0 && thumbnailHeight > 0 {
+		previewType = waE2E.ExtendedTextMessage_IMAGE
+	} else {
+		thumbnail = nil
+	}
+
+	extendedText := &waE2E.ExtendedTextMessage{
+		Text:          proto.String(data.Text),
+		Title:         proto.String(data.Title),
+		MatchedText:   proto.String(matchedText),
+		PreviewType:   &previewType,
+		JPEGThumbnail: thumbnail,
+		Description:   proto.String(data.Description),
+	}
+	if len(thumbnail) > 0 {
+		extendedText.ThumbnailWidth = proto.Uint32(thumbnailWidth)
+		extendedText.ThumbnailHeight = proto.Uint32(thumbnailHeight)
+	}
+
+	return extendedText
 }
 
 func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_model.Instance, maxRetries int) (*MessageSendStruct, error) {
@@ -1034,7 +1072,7 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 					defer imgResp.Body.Close()
 					rawImageData, _ := io.ReadAll(imgResp.Body)
 					s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Link preview image downloaded: contentType=%q bytes=%d", instance.Id, imgResp.Header.Get("Content-Type"), len(rawImageData))
-					fileData, thumbnailWidth, thumbnailHeight = s.buildLinkPreviewThumbnail(rawImageData, 600)
+					fileData, thumbnailWidth, thumbnailHeight = s.buildLinkPreviewThumbnail(rawImageData, 200)
 					if fileData == nil {
 						s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Link preview image ignored because it could not be converted to JPEG thumbnail: %s", instance.Id, data.ImgUrl)
 					}
@@ -1050,42 +1088,8 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
 			s.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Link preview image URL is empty after metadata fetch for %s", instance.Id, matchedText)
 		}
 
-		mediaType := waE2E.ContextInfo_ExternalAdReplyInfo_NONE
-		previewType := waE2E.ExtendedTextMessage_PLACEHOLDER
-		if fileData != nil {
-			mediaType = waE2E.ContextInfo_ExternalAdReplyInfo_IMAGE
-			previewType = waE2E.ExtendedTextMessage_IMAGE
-		}
-		renderLargerThumbnail := fileData != nil
-		extendedText := &waE2E.ExtendedTextMessage{
-			Text:          &data.Text,
-			Title:         &data.Title,
-			MatchedText:   &matchedText,
-			PreviewType:   &previewType,
-			JPEGThumbnail: fileData,
-			Description:   &data.Description,
-			ContextInfo: &waE2E.ContextInfo{
-				ExternalAdReply: &waE2E.ContextInfo_ExternalAdReplyInfo{
-					Title:                 &data.Title,
-					Body:                  &data.Description,
-					MediaType:             &mediaType,
-					Thumbnail:             fileData,
-					SourceURL:             &matchedText,
-					RenderLargerThumbnail: &renderLargerThumbnail,
-				},
-			},
-		}
-		if fileData != nil {
-			extendedText.ThumbnailWidth = proto.Uint32(thumbnailWidth)
-			extendedText.ThumbnailHeight = proto.Uint32(thumbnailHeight)
-			if data.ImgUrl != "" {
-				extendedText.ContextInfo.ExternalAdReply.ThumbnailURL = &data.ImgUrl
-				extendedText.ContextInfo.ExternalAdReply.OriginalImageURL = &data.ImgUrl
-			}
-		}
-
 		msg := &waE2E.Message{
-			ExtendedTextMessage: extendedText,
+			ExtendedTextMessage: buildLinkExtendedTextMessage(data, matchedText, fileData, thumbnailWidth, thumbnailHeight),
 		}
 
 		message, err := s.SendMessage(instance, msg, "ExtendedTextMessage", &SendDataStruct{
