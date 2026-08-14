@@ -212,6 +212,13 @@ func ParseJID(arg string) (whatsmeow_types.JID, bool) {
 	return recipient, true
 }
 
+// CanonicalJID strips the leading plus sign introduced by CreateJID. Raw
+// WhatsApp protocol nodes require a digits-only user component.
+func CanonicalJID(jid whatsmeow_types.JID) whatsmeow_types.JID {
+	jid.User = strings.TrimPrefix(jid.User, "+")
+	return jid
+}
+
 func CreateHTTPProxy(httpHost, httpPort, user, password string) (func(*http.Request) (*url.URL, error), error) {
 	address := fmt.Sprintf("http://%s:%s@%s:%s", user, password, httpHost, httpPort)
 

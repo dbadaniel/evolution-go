@@ -135,6 +135,18 @@ type MyClient struct {
 	passkeyCeremony    *ceremony.Store
 }
 
+func (mycli *MyClient) persistMessageAsync(message message_model.Message) {
+	if mycli == nil || mycli.messageRepository == nil {
+		return
+	}
+
+	go func() {
+		if err := mycli.messageRepository.InsertMessage(message); err != nil {
+			mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to persist message %s: %v", mycli.userID, message.MessageID, err)
+		}
+	}()
+}
+
 type ClientData struct {
 	Instance      *instance_model.Instance
 	Subscriptions []string
@@ -880,13 +892,22 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 
 			postMap["data"] = dataMap
 
-			go schedulePresenceUpdates(mycli)
-
-			err := mycli.WAClient.SendPresence(context.Background(), types.PresenceAvailable)
-			if err != nil {
-				mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] Failed to send available presence %v", mycli.userID, err)
+			var err error
+			if mycli.Instance.AlwaysOnline {
+				go schedulePresenceUpdates(mycli)
+				err = mycli.WAClient.SendPresence(context.Background(), types.PresenceAvailable)
+				if err != nil {
+					mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] Failed to send available presence %v", mycli.userID, err)
+				} else {
+					mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] Marked self as available", mycli.userID)
+				}
 			} else {
-				mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] Marked self as available", mycli.userID)
+				err = mycli.WAClient.SendPresence(context.Background(), types.PresenceUnavailable)
+				if err != nil {
+					mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] Failed to send unavailable presence %v", mycli.userID, err)
+				} else {
+					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Marked self as unavailable (alwaysOnline=false)", mycli.userID)
+				}
 			}
 
 			mycli.Instance.Connected = true
@@ -1194,6 +1215,8 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		if !ok {
 			dataMap = make(map[string]interface{})
 		}
+
+		referral := extractReferralFromMessage(evt.Message)
 
 		if evt.Message.GetPollUpdateMessage() != nil {
 			fmt.Printf("[POLL DEBUG] 🎯 PollUpdateMessage detected!\n")
@@ -1548,6 +1571,17 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 
 		postMap["data"] = dataMap
 
+		if mycli.config.DatabaseSaveMessages {
+			message := message_model.Message{
+				MessageID: evt.Info.ID,
+				Timestamp: evt.Info.Timestamp.Format("2006-01-02 15:04:05"),
+				Status:    "Received",
+				Source:    evt.Info.Chat.ToNonAD().User,
+				Referral:  referral,
+			}
+			mycli.persistMessageAsync(message)
+		}
+
 		// ===== BUTTON CLICK EVENT DETECTION =====
 		// Detecta cliques em botões e emite evento separado "ButtonClick"
 		// Suporta 3 formatos: ButtonsResponseMessage, InteractiveResponseMessage (NativeFlow), TemplateButtonReplyMessage
@@ -1705,7 +1739,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 					message.Source = evt.Chat.ToNonAD().User
 
 					if mycli.config.DatabaseSaveMessages {
-						go mycli.messageRepository.InsertMessage(message)
+						mycli.persistMessageAsync(message)
 					}
 				}
 			} else {
@@ -1732,7 +1766,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 					Source:    evt.Chat.ToNonAD().User,
 				}
 				if mycli.config.DatabaseSaveMessages {
-					go mycli.messageRepository.InsertMessage(message)
+					mycli.persistMessageAsync(message)
 				}
 			}
 			if processedCount == 0 {
@@ -1966,6 +2000,12 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	case *events.PushName:
 		doWebhook = true
 		postMap["event"] = "PushName"
+	case *events.Picture:
+		doWebhook = true
+		postMap["event"] = "Picture"
+	case *events.UserAbout:
+		doWebhook = true
+		postMap["event"] = "UserAbout"
 	case *events.IdentityChange:
 		doWebhook = false
 	case *events.GroupInfo:
@@ -2172,6 +2212,16 @@ func (w *whatsmeowService) CallWebhook(instance *instance_model.Instance, queueN
 		}
 	case "Contact", "PushName":
 		if contains(subscriptions, "CONTACT") {
+			w.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Event received of type %s", instance.Id, eventType)
+			w.sendToQueueOrWebhook(instance, queueName, jsonData)
+		}
+	case "Picture":
+		if contains(subscriptions, "PICTURE") {
+			w.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Event received of type %s", instance.Id, eventType)
+			w.sendToQueueOrWebhook(instance, queueName, jsonData)
+		}
+	case "UserAbout":
+		if contains(subscriptions, "USER_ABOUT") {
 			w.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Event received of type %s", instance.Id, eventType)
 			w.sendToQueueOrWebhook(instance, queueName, jsonData)
 		}
@@ -2502,6 +2552,10 @@ func (w *whatsmeowService) SendToGlobalQueues(eventType string, payload []byte, 
 			globalEventType = "LABEL"
 		case "Contact", "PushName":
 			globalEventType = "CONTACT"
+		case "Picture":
+			globalEventType = "PICTURE"
+		case "UserAbout":
+			globalEventType = "USER_ABOUT"
 		case "GroupInfo", "JoinedGroup":
 			globalEventType = "GROUP"
 		case "NewsletterJoin", "NewsletterLeave":

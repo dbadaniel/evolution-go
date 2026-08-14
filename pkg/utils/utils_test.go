@@ -1,8 +1,36 @@
 package utils
 
 import (
+	"strings"
 	"testing"
 )
+
+func TestCanonicalJID(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"554187083284", "554187083284@s.whatsapp.net"},
+		{"15551234567", "15551234567@s.whatsapp.net"},
+		{"554187083284@s.whatsapp.net", "554187083284@s.whatsapp.net"},
+		{"15883309207561@lid", "15883309207561@lid"},
+		{"120363123456789012@g.us", "120363123456789012@g.us"},
+	}
+
+	for _, test := range tests {
+		jid, ok := ParseJID(test.input)
+		if !ok {
+			t.Fatalf("ParseJID(%q) failed", test.input)
+		}
+		got := CanonicalJID(jid)
+		if got.String() != test.want {
+			t.Errorf("CanonicalJID(%q) = %q, want %q", test.input, got.String(), test.want)
+		}
+		if strings.HasPrefix(got.User, "+") {
+			t.Errorf("CanonicalJID(%q) retained leading plus sign", test.input)
+		}
+	}
+}
 
 func TestCreateJID(t *testing.T) {
 	tests := []struct {

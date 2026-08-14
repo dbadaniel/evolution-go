@@ -27,6 +27,7 @@ type MessageService interface {
 	React(data *ReactStruct, instance *instance_model.Instance) (*MessageSendStruct, error)
 	ChatPresence(data *ChatPresenceStruct, instance *instance_model.Instance) (string, error)
 	MarkRead(data *MarkReadStruct, instance *instance_model.Instance) (string, error)
+	MarkPlayed(data *MarkPlayedStruct, instance *instance_model.Instance) (string, error)
 	DownloadMedia(data *DownloadMediaStruct, instance *instance_model.Instance, request *http.Request) (*dataurl.DataURL, string, error)
 	GetMessageStatus(data *MessageStatusStruct, instance *instance_model.Instance) (*message_model.Message, string, error)
 	DeleteMessageEveryone(data *MessageStruct, instance *instance_model.Instance) (string, string, error)
@@ -54,9 +55,15 @@ type ChatPresenceStruct struct {
 	Number  string `json:"number"`
 	State   string `json:"state"`
 	IsAudio bool   `json:"isAudio"`
+	Delay   int    `json:"delay"`
 }
 
 type MarkReadStruct struct {
+	Id     []string `json:"id"`
+	Number string   `json:"number"`
+}
+
+type MarkPlayedStruct struct {
 	Id     []string `json:"id"`
 	Number string   `json:"number"`
 }
@@ -146,6 +153,7 @@ func (m *messageService) React(data *ReactStruct, instance *instance_model.Insta
 		m.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Error validating message fields", instance.Id)
 		return nil, errors.New("invalid phone number")
 	}
+	recipient = utils.CanonicalJID(recipient)
 
 	if data.Id == "" {
 		m.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Missing Id in Payload", instance.Id)
@@ -171,7 +179,7 @@ func (m *messageService) React(data *ReactStruct, instance *instance_model.Insta
 	if data.Participant != "" {
 		participantJID, ok := utils.ParseJID(data.Participant)
 		if ok {
-			messageKey.Participant = proto.String(participantJID.String())
+			messageKey.Participant = proto.String(utils.CanonicalJID(participantJID).String())
 		}
 	}
 
@@ -184,9 +192,7 @@ func (m *messageService) React(data *ReactStruct, instance *instance_model.Insta
 		},
 	}
 
-	response, err := client.SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{
-		ID: msgId,
-	})
+	response, err := client.SendMessage(context.Background(), recipient, msg)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +207,7 @@ func (m *messageService) React(data *ReactStruct, instance *instance_model.Insta
 			IsFromMe: true,
 			IsGroup:  isGroup,
 		},
-		ID:        msgId,
+		ID:        response.ID,
 		Timestamp: time.Now(),
 		ServerID:  response.ServerID,
 		Type:      messageType,
@@ -228,6 +234,7 @@ func (m *messageService) ChatPresence(data *ChatPresenceStruct, instance *instan
 		m.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Error validating message fields", instance.Id)
 		return "", errors.New("invalid phone number")
 	}
+	recipient = utils.CanonicalJID(recipient)
 
 	media := ""
 
@@ -235,12 +242,43 @@ func (m *messageService) ChatPresence(data *ChatPresenceStruct, instance *instan
 		media = "audio"
 	}
 
-	err = client.SendChatPresence(context.Background(), recipient, types.ChatPresence(data.State), types.ChatPresenceMedia(media))
+	if presErr := client.SendPresence(context.Background(), types.PresenceAvailable); presErr != nil {
+		m.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] SendPresence(available) before chatstate failed (non-fatal): %v", instance.Id, presErr)
+	}
+
+	state := types.ChatPresence(data.State)
+	mediaType := types.ChatPresenceMedia(media)
+	err = client.SendChatPresence(context.Background(), recipient, state, mediaType)
 	if err != nil {
 		return "", err
 	}
 
-	m.loggerWrapper.GetLogger(instance.Id).LogInfo("Message sent to %s", data.Number)
+	if data.Delay > 0 && state == types.ChatPresenceComposing {
+		const keepAliveInterval = 5 * time.Second
+		const maxDelay = 60 * time.Second
+		remaining := time.Duration(data.Delay) * time.Millisecond
+		if remaining > maxDelay {
+			remaining = maxDelay
+		}
+		for remaining > 0 {
+			sleep := keepAliveInterval
+			if remaining < sleep {
+				sleep = remaining
+			}
+			time.Sleep(sleep)
+			remaining -= sleep
+			if remaining > 0 {
+				if refreshErr := client.SendChatPresence(context.Background(), recipient, state, mediaType); refreshErr != nil {
+					m.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Refresh chatstate failed (non-fatal): %v", instance.Id, refreshErr)
+				}
+			}
+		}
+		if pausedErr := client.SendChatPresence(context.Background(), recipient, types.ChatPresencePaused, mediaType); pausedErr != nil {
+			m.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] SendChatPresence(paused) failed (non-fatal): %v", instance.Id, pausedErr)
+		}
+	}
+
+	m.loggerWrapper.GetLogger(instance.Id).LogInfo("Presence (%s) sent to %s", data.State, data.Number)
 
 	return ts.String(), nil
 }
@@ -258,11 +296,35 @@ func (m *messageService) MarkRead(data *MarkReadStruct, instance *instance_model
 		m.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Error validating message fields", instance.Id)
 		return "", errors.New("invalid phone number")
 	}
+	jid = utils.CanonicalJID(jid)
 
 	err = client.MarkRead(context.Background(), data.Id, time.Now(), jid, jid)
 	if err != nil {
 		m.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error marking message as read: %v", instance.Id, err)
 		return "", errors.New("error marking message as read")
+	}
+
+	return ts.String(), nil
+}
+
+func (m *messageService) MarkPlayed(data *MarkPlayedStruct, instance *instance_model.Instance) (string, error) {
+	client, err := m.ensureClientConnected(instance.Id)
+	if err != nil {
+		return "", err
+	}
+
+	var ts time.Time
+	jID, ok := utils.ParseJID(data.Number)
+	if !ok {
+		m.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Error validating message fields", instance.Id)
+		return "", errors.New("invalid phone number")
+	}
+	jID = utils.CanonicalJID(jID)
+
+	err = client.MarkRead(context.Background(), data.Id, time.Now(), jID, jID, types.ReceiptTypePlayed)
+	if err != nil {
+		m.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error marking message as played: %v", instance.Id, err)
+		return "", errors.New("error marking message as played")
 	}
 
 	return ts.String(), nil

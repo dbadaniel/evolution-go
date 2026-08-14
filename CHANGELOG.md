@@ -1,5 +1,58 @@
 # Evolution GO - Changelog
 
+## v0.7.2
+
+Path-scoped port of upstream `0.7.2` onto this fork's Expertsa-specific work,
+done deliberately without a raw merge to avoid regressing local interactive-message
+behavior. Full rationale and per-item decisions tracked in `docs/fork-delta.md`.
+
+### 🆕 New Features
+- **Passkey (WebAuthn) pairing** — support for linking accounts that the WhatsApp
+  server locks behind a passkey. QR/pairing now goes through `events.QR` so the
+  socket stays alive during the passkey ceremony.
+- **`go.mau.fi/whatsmeow` official dependency** — replaced the local
+  `whatsmeow-lib` fork/submodule with the official upstream module
+  (`go.mau.fi/whatsmeow v0.0.0-20260630180629-b572e5bcb92b`), keeping this
+  fork's local module path unchanged.
+- **`/message/pin` and `/message/unpin`** — pin/unpin a chat message. Endpoint
+  and service call are wired against the official whatsmeow client, which
+  already sends `PinInChatMessage`/`edit=2`; still pending a real WhatsApp
+  smoke test before being considered fully verified.
+- **`ForwardingScore`** — optional field on `/send/text` and `/send/media`;
+  when set, WhatsApp renders the message with the "Forwarded" label.
+- **PDF document thumbnails** — `/send/media` documents with
+  `mimeType=application/pdf` now get a page-1 JPEG preview rendered via
+  `pdftoppm` (poppler-utils, added to the Docker image).
+
+### 🔧 Improvements
+- **`POST /instance/pair`** — pairing errors now surface instead of returning
+  an empty `PairingCode`.
+- **`GET /instance/status`** — disconnected instances return a disconnected
+  status instead of a client lookup error.
+- **Presence and receipts** — raw protocol operations now use canonical JIDs,
+  `AlwaysOnline=false` is respected, typing presence supports bounded keepalive,
+  and `/message/markplayed` sends played receipts for audio messages.
+- **Message persistence** — received messages and Meta ad referral metadata are
+  stored when enabled; asynchronous persistence errors are now logged.
+- **Profile events** — added subscription and global-queue support for
+  `PICTURE` and `USER_ABOUT` events.
+
+### 🐛 Bug Fixes
+- **Group receipt tracking** — the `Read`/`Delivered` receipt dedup key only
+  used the message ID, so in group chats only the first participant's receipt
+  per message was recorded and every other participant's receipt was dropped
+  as a duplicate. The dedup key now includes the sender, so delivery/read
+  status is tracked per participant.
+- **`ForceReconnect`** — guarded against a nil client pointer, avoided
+  recreating the kill channel before the old client was torn down, and
+  removed a recursive client restart on context cancellation. Unstable
+  reconnects could desync a participant's Signal session, showing up as
+  `retry` receipts (failed decryption) for that person while the sender still
+  saw the message as sent.
+- **Reactions** — reaction envelopes now receive a fresh WhatsApp message ID
+  instead of reusing the ID of the message being reacted to, preventing silent
+  deduplication and dropped reactions.
+
 ## v0.7.0
 
 **Docker:** `evoapicloud/evolution-go:0.7.0`

@@ -95,6 +95,27 @@ Ported 2026-07-31 (re-evaluation after the passkey/security pass above):
   pinned on a phone. See
   `_evo-output/implementation-artifacts/upstream-0.7.2-meta-security/deferred-work.md`.
 
+Ported 2026-08-13 after parity review against `upstream/main` (`9337afc`):
+
+- Reactions use a fresh envelope ID and retain the referenced message ID only
+  inside `MessageKey`; recipients and group participants use canonical JIDs.
+- Raw protocol operations (typing, read and played receipts) canonicalize JIDs.
+- `AlwaysOnline=false` is respected on connection; chat presence supports a
+  bounded keepalive delay and explicit `paused` cleanup.
+- Incoming messages are persisted when configured, including Meta ad referral
+  metadata; later receipt updates preserve referral data and persistence errors
+  are logged.
+- Added `/message/markplayed` and webhook/global event support for `Picture` and
+  `UserAbout`.
+
+Preserved Expertsa behavior during this port:
+
+- Empty/whitespace/duplicate receipt IDs continue to be filtered before
+  persistence, deduplication and webhook dispatch, and all valid delivered IDs
+  in a grouped receipt are processed.
+- Local list transport, button workaround, link preview and pin endpoints were
+  not replaced by their upstream counterparts.
+
 ## Sensitive Files
 
 - `pkg/sendMessage/service/send_service.go`

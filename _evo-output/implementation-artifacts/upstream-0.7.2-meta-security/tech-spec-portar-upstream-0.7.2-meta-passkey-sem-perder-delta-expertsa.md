@@ -122,6 +122,12 @@ context: []
   processar todos os IDs de recibos `Delivered` sem perder IDs novos quando um
   anterior ja estava deduplicado. A segunda passagem de edge cases e auditoria
   de aceitacao nao encontrou violacoes remanescentes.
+- 2026-08-13: Portadas as correcoes restantes de alta/media prioridade do
+  upstream: envelope unico para reacoes, JIDs canonicos em nodes raw,
+  `AlwaysOnline` respeitado, persistencia de mensagens recebidas/referral com
+  erros observaveis, presenca com keepalive, `/message/markplayed` e eventos
+  `Picture`/`UserAbout`. O porte foi feito por caminho, preservando os deltas
+  Expertsa de recibos, listas, botoes e preview de link.
 
 ## Design Notes
 
@@ -136,6 +142,8 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
 - `go build ./cmd/evolution-go` -- expected: compile succeeds with official whatsmeow dependency.
 - `git diff --check` -- passed on 2026-07-06 after each `send_service.go` step.
 - `go test ./pkg/whatsmeow/service` -- passed on 2026-08-13 after adding receipt ID validation.
+- `go test ./pkg/utils ./pkg/message/repository ./pkg/internal/event_types ./pkg/message/service ./pkg/message/handler ./pkg/whatsmeow/service` -- passed on 2026-08-13 after the follow-up upstream parity fixes.
+- `go test ./pkg/routes` -- reached the pre-existing Windows/CGO `github.com/chai2010/webp` failure; the route source itself is covered by compilation in the Linux/Docker build path.
 - `git bundle verify _evo-output/backups/whatsmeow-lib-before-removal-20260813.bundle` -- passed on 2026-08-13; bundle records complete history.
 - `go test ./cmd/evolution-go` -- blocked on 2026-08-13 by the pre-existing Windows/CGO `github.com/chai2010/webp` build failure; Docker installs the required native libraries.
 
@@ -158,3 +166,25 @@ Porting should be path-scoped rather than commit-cherry-pick because upstream `0
   nao declarar imagem sem bytes de thumbnail. Retorno da API confirmou
   `previewType=4`, `mediaType=0` e ausencia de `JPEGThumbnail` para o subdominio;
   fallback de extracao de imagem foi ampliado.
+
+## Senior Developer Review (AI)
+
+**Outcome:** Approved after fixes.
+
+- Corrigido o reuso incorreto do ID da mensagem original como ID do envelope de
+  reacao; o ID retornado pelo WhatsMeow agora identifica a nova mensagem.
+- Normalizados destinatario/participante para JID canonico em reacoes,
+  chatstate, recibos de leitura e recibos de audio reproduzido.
+- `AlwaysOnline=false` agora envia `Unavailable` e nao inicia o ticker de
+  presenca; chatstate suporta `delay` limitado a 60 segundos e finaliza em
+  `paused`.
+- Mensagens recebidas sao persistidas quando `DatabaseSaveMessages=true`, com
+  referral de anuncio preservado; updates posteriores de status nao apagam um
+  referral ja salvo.
+- Persistencia assincrona de mensagens/recibos passou a registrar erros em vez
+  de ignora-los silenciosamente.
+- Adicionados `/message/markplayed`, `Picture` e `UserAbout`, incluindo
+  roteamento por assinatura e filas globais.
+- Testes adicionados para JID canonico, referral, colunas de upsert e novos tipos
+  de evento. Os pacotes tocados passaram; somente `pkg/routes` continua bloqueado
+  pela falha CGO/WebP pre-existente do ambiente Windows.

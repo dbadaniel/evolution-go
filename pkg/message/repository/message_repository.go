@@ -20,8 +20,16 @@ type messageRepository struct {
 func (m *messageRepository) InsertMessage(message message_model.Message) error {
 	return m.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "message_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"timestamp", "status", "source"}),
+		DoUpdates: clause.AssignmentColumns(messageUpdateColumns(message)),
 	}).Create(&message).Error
+}
+
+func messageUpdateColumns(message message_model.Message) []string {
+	columns := []string{"timestamp", "status", "source"}
+	if len(message.Referral) > 0 {
+		columns = append(columns, "referral")
+	}
+	return columns
 }
 
 func (m *messageRepository) GetMessageByID(messageID string) (*message_model.Message, error) {
