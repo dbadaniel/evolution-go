@@ -1,4 +1,4 @@
-.PHONY: help dev run build test clean swagger deps docker-build docker-publish docker-publish-validate docker-run install setup migrate-up migrate-down logs
+.PHONY: help dev run build test clean swagger deps docker-build docker-publish docker-publish-validate docker-publish-evogo docker-publish-evogo-validate docker-run install setup migrate-up migrate-down logs
 
 # Configurações
 APP_NAME=evolution-go
@@ -10,6 +10,10 @@ PUBLISH_VERSION=$(patsubst 0.%,%,$(patsubst v%,%,$(VERSION)))
 DOCKER_REPOSITORY?=dbadaniel/expertsa
 DOCKER_TAG?=evolution-go$(PUBLISH_VERSION)
 DOCKER_IMAGE=$(DOCKER_REPOSITORY):$(DOCKER_TAG)
+DOCKER_EVOGO_REPOSITORY?=dbadaniel/evogo
+DOCKER_EVOGO_TAG?=$(patsubst v%,%,$(VERSION))
+DOCKER_EVOGO_IMAGE=$(DOCKER_EVOGO_REPOSITORY):$(DOCKER_EVOGO_TAG)
+DOCKER_EVOGO_LATEST=$(DOCKER_EVOGO_REPOSITORY):latest
 SHELL_QUOTE=$(subst ','"'"',$(1))
 LDFLAGS=-ldflags "-X main.version=$(VERSION)"
 GOFLAGS=-v
@@ -189,6 +193,31 @@ docker-publish: docker-publish-validate ## Build, tag e publica a imagem Docker
 	@printf "$(GREEN)🚀 Publicando %s...$(NC)\n" '$(call SHELL_QUOTE,$(DOCKER_IMAGE))'
 	docker push '$(call SHELL_QUOTE,$(DOCKER_IMAGE))'
 	@printf "$(GREEN)✅ Imagem publicada: %s$(NC)\n" '$(call SHELL_QUOTE,$(DOCKER_IMAGE))'
+
+docker-publish-evogo-validate:
+	@version='$(call SHELL_QUOTE,$(VERSION))'; \
+	repository='$(call SHELL_QUOTE,$(DOCKER_EVOGO_REPOSITORY))'; \
+	tag='$(call SHELL_QUOTE,$(DOCKER_EVOGO_TAG))'; \
+	if ! printf '%s\n' "$$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$'; then \
+		echo "$(RED)❌ VERSION inválida: $$version$(NC)"; exit 1; \
+	fi; \
+	if ! printf '%s\n' "$$repository" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)*$$'; then \
+		echo "$(RED)❌ DOCKER_EVOGO_REPOSITORY inválido: $$repository$(NC)"; exit 1; \
+	fi; \
+	if ! printf '%s\n' "$$tag" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$$'; then \
+		echo "$(RED)❌ DOCKER_EVOGO_TAG inválida: $$tag$(NC)"; exit 1; \
+	fi
+
+docker-publish-evogo: docker-publish-evogo-validate ## Build, tag e publica a imagem Docker no repositório público (dbadaniel/evogo)
+	$(MAKE) docker-build
+	@printf "$(YELLOW)🏷️  Criando tags %s e %s...$(NC)\n" '$(call SHELL_QUOTE,$(DOCKER_EVOGO_IMAGE))' '$(call SHELL_QUOTE,$(DOCKER_EVOGO_LATEST))'
+	docker tag '$(call SHELL_QUOTE,$(APP_NAME):latest)' '$(call SHELL_QUOTE,$(DOCKER_EVOGO_IMAGE))'
+	docker tag '$(call SHELL_QUOTE,$(APP_NAME):latest)' '$(call SHELL_QUOTE,$(DOCKER_EVOGO_LATEST))'
+	@printf "$(GREEN)🚀 Publicando %s...$(NC)\n" '$(call SHELL_QUOTE,$(DOCKER_EVOGO_IMAGE))'
+	docker push '$(call SHELL_QUOTE,$(DOCKER_EVOGO_IMAGE))'
+	@printf "$(GREEN)🚀 Publicando %s...$(NC)\n" '$(call SHELL_QUOTE,$(DOCKER_EVOGO_LATEST))'
+	docker push '$(call SHELL_QUOTE,$(DOCKER_EVOGO_LATEST))'
+	@printf "$(GREEN)✅ Imagem pública publicada com sucesso: %s e %s$(NC)\n" '$(call SHELL_QUOTE,$(DOCKER_EVOGO_IMAGE))' '$(call SHELL_QUOTE,$(DOCKER_EVOGO_LATEST))'
 
 docker-run: ## Roda container Docker
 	@echo "$(GREEN)🐳 Iniciando container...$(NC)"
