@@ -1138,8 +1138,29 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		senderAltStr := evt.Info.SenderAlt.String()
 		chatStr := evt.Info.Chat.String()
 
+		// Preserva os dados originais do remetente e dispositivo antes da limpeza
+		rawSenderStr := senderStr
+		rawSenderAltStr := senderAltStr
+		senderDevice := extractDeviceID(senderStr)
+		if senderDevice == 0 && senderAltStr != "" {
+			senderDevice = extractDeviceID(senderAltStr)
+		}
+		if senderDevice == 0 && evt.Info.Sender.Device != 0 {
+			senderDevice = int(evt.Info.Sender.Device)
+		}
+		if senderDevice == 0 && evt.Info.SenderAlt.Device != 0 {
+			senderDevice = int(evt.Info.SenderAlt.Device)
+		}
+
+		var rawSender string
+		var rawSenderAlt string
+
 		if strings.Contains(senderStr, "@lid") && strings.Contains(senderAltStr, "@s.whatsapp.net") {
 			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Detected LID/WhatsApp JID swap case - Sender: %s, SenderAlt: %s", mycli.userID, senderStr, senderAltStr)
+
+			// No swap case, o JID de telefone original veio em senderAltStr
+			rawSender = rawSenderAltStr
+			rawSenderAlt = rawSenderStr
 
 			// Limpa os IDs antes de fazer a troca
 			cleanSenderAlt := cleanSenderID(senderAltStr)
@@ -1158,9 +1179,12 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 				evt.Info.SenderAlt = cleanedLID
 			}
 
-			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] JID swap completed - New Sender: %s, New SenderAlt: %s, New Chat: %s",
-				mycli.userID, evt.Info.Sender.String(), evt.Info.SenderAlt.String(), evt.Info.Chat.String())
+			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] JID swap completed - New Sender: %s, New SenderAlt: %s, New Chat: %s, Device: %d",
+				mycli.userID, evt.Info.Sender.String(), evt.Info.SenderAlt.String(), evt.Info.Chat.String(), senderDevice)
 		} else {
+			rawSender = rawSenderStr
+			rawSenderAlt = rawSenderAltStr
+
 			// Comportamento normal: apenas limpa os IDs
 			cleanSender := cleanSenderID(senderStr)
 			if cleanedJID, err := types.ParseJID(cleanSender); err == nil {
@@ -1214,6 +1238,20 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		dataMap, ok := postMap["data"].(map[string]interface{})
 		if !ok {
 			dataMap = make(map[string]interface{})
+		}
+
+		// Injeta informações de dispositivo e remetente original
+		if infoMap, ok := dataMap["Info"].(map[string]interface{}); ok {
+			infoMap["Device"] = senderDevice
+			infoMap["RawSender"] = rawSender
+			if rawSenderAlt != "" {
+				infoMap["RawSenderAlt"] = rawSenderAlt
+			}
+		}
+		dataMap["Device"] = senderDevice
+		dataMap["RawSender"] = rawSender
+		if rawSenderAlt != "" {
+			dataMap["RawSenderAlt"] = rawSenderAlt
 		}
 
 		referral := extractReferralFromMessage(evt.Message)
@@ -2007,10 +2045,28 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		doWebhook = true
 		postMap["event"] = "UserAbout"
 	case *events.IdentityChange:
-		doWebhook = false
+		doWebhook = true
+		postMap["event"] = "IdentityChange"
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] Identity change detected for JID: %s, Timestamp: %v", mycli.userID, evt.JID.String(), evt.Timestamp)
 	case *events.GroupInfo:
 		doWebhook = true
 		postMap["event"] = "GroupInfo"
+
+		groupData := make(map[string]interface{})
+		if jsonBytes, err := json.Marshal(evt); err == nil {
+			_ = json.Unmarshal(jsonBytes, &groupData)
+		}
+		if evt.Sender != nil {
+			rawSender := evt.Sender.String()
+			dev := int(evt.Sender.Device)
+			if dev == 0 {
+				dev = extractDeviceID(rawSender)
+			}
+			groupData["Device"] = dev
+			groupData["RawSender"] = rawSender
+			groupData["SenderClean"] = cleanSenderID(rawSender)
+		}
+		postMap["data"] = groupData
 	case *events.JoinedGroup:
 		doWebhook = true
 		postMap["event"] = "JoinedGroup"
@@ -2860,6 +2916,20 @@ func (w *whatsmeowService) ConfirmPasskey(instanceId string) error {
 		w.passkeyCeremony.SetConfirmed(instanceId)
 	}
 	return nil
+}
+
+// extractDeviceID extrai o número do dispositivo a partir do sender ID
+// Exemplo: "557499879409:3@s.whatsapp.net" -> 3, "557499879409@s.whatsapp.net" -> 0
+func extractDeviceID(senderID string) int {
+	if colonIndex := strings.Index(senderID, ":"); colonIndex != -1 {
+		if atIndex := strings.Index(senderID, "@"); atIndex != -1 && colonIndex < atIndex {
+			devStr := senderID[colonIndex+1 : atIndex]
+			if dev, err := strconv.Atoi(devStr); err == nil {
+				return dev
+			}
+		}
+	}
+	return 0
 }
 
 // cleanSenderID remove a parte ":numero" do sender ID para exibir apenas o remoteJid correto
