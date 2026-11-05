@@ -1,8 +1,7 @@
 <div align="center">
-
-# Evolution Go — Expertsa Edition
-
-**Fork de produção focado em solidez, estabilidade de sessão e entrega contínua de eventos para o ecossistema Evolution Go**
+  <img src="./Exsa-azul.png" alt="Expertsa" width="480"/>
+  <h1>Evolution Go — Expertsa Edition</h1>
+  <p><strong>Fork de produção focado em solidez, estabilidade de sessão e entrega contínua de desenvolvimento</strong></p>
 
 [![Docker Image](https://img.shields.io/badge/Docker-dbadaniel%2Fevogo:0.7.3-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/dbadaniel/evogo)
 [![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://golang.org/)
@@ -10,8 +9,8 @@
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](./LICENSE)
 [![Upstream](https://img.shields.io/badge/Upstream-EvolutionAPI%2Fevolution--go-orange)](https://github.com/EvolutionAPI/evolution-go)
 
-<img src="./public/images/cover.png" width="420" alt="Evolution Go">
-
+  <br/>
+  <img src="./public/images/cover.png" width="360" alt="Evolution Go"/>
 </div>
 
 ---
@@ -149,17 +148,17 @@ LOGTYPE=console
 # MINIO_SECRET_KEY=minioadmin
 ```
 
-| Variável | Descrição | Padrão |
-|----------|-----------|--------|
-| `SERVER_PORT` | Porta HTTP do servidor | `8080` |
-| `CLIENT_NAME` | Identificador do cliente exibido no dispositivo conectado | `evolution` |
-| `GLOBAL_API_KEY` | Chave global de autenticação da API | **Obrigatório** |
-| `POSTGRES_USERS_DB` | URI PostgreSQL para instâncias, configurações e mensagens | **Obrigatório** |
-| `POSTGRES_AUTH_DB` | URI PostgreSQL para chaves de sessão do `whatsmeow` (faz fallback automático para `POSTGRES_USERS_DB` se omitido) | Fallback p/ `POSTGRES_USERS_DB` |
-| `CONNECT_ON_STARTUP` | Reconecta automaticamente todas as sessões pareadas ao iniciar o container (`true` / `false`) | `true` |
-| `DATABASE_SAVE_MESSAGES` | Ativa a persistência de mensagens recebidas/enviadas no banco | `false` |
-| `PROXY_PROTOCOL` | Protocolo padrão de proxy (`http`, `https`, `socks5`) | Inferido por porta |
-| `WADEBUG` | Nível de log do cliente WhatsApp (`DEBUG`, `INFO`, `WARN`, `ERROR`) | `INFO` |
+| Variável                 | Descrição                                                                                                         | Padrão                          |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `SERVER_PORT`            | Porta HTTP do servidor                                                                                            | `8080`                          |
+| `CLIENT_NAME`            | Identificador do cliente exibido no dispositivo conectado                                                         | `evolution`                     |
+| `GLOBAL_API_KEY`         | Chave global de autenticação da API                                                                               | **Obrigatório**                 |
+| `POSTGRES_USERS_DB`      | URI PostgreSQL para instâncias, configurações e mensagens                                                         | **Obrigatório**                 |
+| `POSTGRES_AUTH_DB`       | URI PostgreSQL para chaves de sessão do `whatsmeow` (faz fallback automático para `POSTGRES_USERS_DB` se omitido) | Fallback p/ `POSTGRES_USERS_DB` |
+| `CONNECT_ON_STARTUP`     | Reconecta automaticamente todas as sessões pareadas ao iniciar o container (`true` / `false`)                     | `true`                          |
+| `DATABASE_SAVE_MESSAGES` | Ativa a persistência de mensagens recebidas/enviadas no banco                                                     | `false`                         |
+| `PROXY_PROTOCOL`         | Protocolo padrão de proxy (`http`, `https`, `socks5`)                                                             | Inferido por porta              |
+| `WADEBUG`                | Nível de log do cliente WhatsApp (`DEBUG`, `INFO`, `WARN`, `ERROR`)                                               | `INFO`                          |
 
 ---
 
@@ -179,39 +178,39 @@ http://localhost:8080/manager/login
 
 ### Principais Endpoints
 
-| Método | Endpoint | Descrição |
-|--------|----------|-----------|
-| `POST` | `/instance/create` | Cria uma nova instância WhatsApp |
-| `POST` | `/instance/connect` | Inicia a conexão e configura Webhook / Eventos assinados |
-| `GET` | `/instance/qr` | Obtém o QR Code atual para pareamento |
-| `POST` | `/instance/pair` | Pareamento via código numérico / Passkey |
-| `GET` | `/instance/status` | Consulta o status de conexão da instância |
-| `POST` | `/instance/disconnect` | Desconecta a sessão mantendo as chaves salvas |
-| `DELETE` | `/instance/logout` | Faz logout do aparelho e limpa a sessão |
-| `POST` | `/send/text` | Envia mensagem de texto (suporta menções, quote e `forwardingScore`) |
-| `POST` | `/send/media` | Envia mídia via URL, upload multipart ou Base64 (gera thumbnail de PDF automaticamente) |
-| `POST` | `/send/button` | Envia mensagens com botões interativos (Reply, CTA URL/Call/Copy, Pix) |
-| `POST` | `/send/list` | Envia mensagens de lista interativa multiplataforma |
-| `POST` | `/send/carousel` | Envia carrossel de cards interativos com imagens e botões |
-| `POST` | `/send/status/text` | Publica Status em texto (`status@broadcast`) |
-| `POST` | `/send/status/media` | Publica Status em imagem ou vídeo |
-| `POST` | `/message/pin` | Fixa uma mensagem na conversa |
-| `POST` | `/message/unpin` | Desafixa uma mensagem na conversa |
+| Método   | Endpoint               | Descrição                                                                               |
+| -------- | ---------------------- | --------------------------------------------------------------------------------------- |
+| `POST`   | `/instance/create`     | Cria uma nova instância WhatsApp                                                        |
+| `POST`   | `/instance/connect`    | Inicia a conexão e configura Webhook / Eventos assinados                                |
+| `GET`    | `/instance/qr`         | Obtém o QR Code atual para pareamento                                                   |
+| `POST`   | `/instance/pair`       | Pareamento via código numérico / Passkey                                                |
+| `GET`    | `/instance/status`     | Consulta o status de conexão da instância                                               |
+| `POST`   | `/instance/disconnect` | Desconecta a sessão mantendo as chaves salvas                                           |
+| `DELETE` | `/instance/logout`     | Faz logout do aparelho e limpa a sessão                                                 |
+| `POST`   | `/send/text`           | Envia mensagem de texto (suporta menções, quote e `forwardingScore`)                    |
+| `POST`   | `/send/media`          | Envia mídia via URL, upload multipart ou Base64 (gera thumbnail de PDF automaticamente) |
+| `POST`   | `/send/button`         | Envia mensagens com botões interativos (Reply, CTA URL/Call/Copy, Pix)                  |
+| `POST`   | `/send/list`           | Envia mensagens de lista interativa multiplataforma                                     |
+| `POST`   | `/send/carousel`       | Envia carrossel de cards interativos com imagens e botões                               |
+| `POST`   | `/send/status/text`    | Publica Status em texto (`status@broadcast`)                                            |
+| `POST`   | `/send/status/media`   | Publica Status em imagem ou vídeo                                                       |
+| `POST`   | `/message/pin`         | Fixa uma mensagem na conversa                                                           |
+| `POST`   | `/message/unpin`       | Desafixa uma mensagem na conversa                                                       |
 
 ---
 
 ## 🛠️ Stack Tecnológica
 
-| Componente | Tecnologia |
-|------------|------------|
-| Linguagem | Go 1.26+ |
-| Framework HTTP | Gin |
-| Motor WhatsApp | [go.mau.fi/whatsmeow](https://github.com/tulir/whatsmeow) (Oficial) |
-| Banco de Dados | PostgreSQL + GORM |
-| Mensageria & Eventos | Webhook, WebSocket, RabbitMQ (AMQP), NATS |
-| Object Storage | MinIO / Amazon S3 |
-| Processamento de PDF/Imagem | `poppler-utils` (`pdftoppm`), WebP/JPEG nativo |
-| Container | Docker (Alpine Linux 3.21) |
+| Componente                  | Tecnologia                                                          |
+| --------------------------- | ------------------------------------------------------------------- |
+| Linguagem                   | Go 1.26+                                                            |
+| Framework HTTP              | Gin                                                                 |
+| Motor WhatsApp              | [go.mau.fi/whatsmeow](https://github.com/tulir/whatsmeow) (Oficial) |
+| Banco de Dados              | PostgreSQL + GORM                                                   |
+| Mensageria & Eventos        | Webhook, WebSocket, RabbitMQ (AMQP), NATS                           |
+| Object Storage              | MinIO / Amazon S3                                                   |
+| Processamento de PDF/Imagem | `poppler-utils` (`pdftoppm`), WebP/JPEG nativo                      |
+| Container                   | Docker (Alpine Linux 3.21)                                          |
 
 ---
 
