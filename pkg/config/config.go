@@ -224,6 +224,14 @@ func Load() *Config {
 		logger.LogFatal("[CONFIG] required database configuration variables are missing. Please check your environment configuration.")
 	}
 
+	if postgresAuthDB == "" {
+		if postgresUsersDB != "" {
+			postgresAuthDB = postgresUsersDB
+		} else {
+			postgresAuthDB = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", postgresHost, postgresPort, postgresUser, postgresPassword, postgresDB)
+		}
+	}
+
 	databaseSaveMessages := os.Getenv(config_env.DATABASE_SAVE_MESSAGES)
 	panicIfEmpty(config_env.DATABASE_SAVE_MESSAGES, databaseSaveMessages)
 
@@ -243,7 +251,7 @@ func Load() *Config {
 
 	connectOnStartup := os.Getenv(config_env.CONNECT_ON_STARTUP)
 	if connectOnStartup == "" {
-		connectOnStartup = "false"
+		connectOnStartup = "true"
 	}
 
 	osName := os.Getenv(config_env.OS_NAME)

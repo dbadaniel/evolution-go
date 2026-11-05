@@ -118,7 +118,7 @@ func (i *instanceRepository) UpdateJid(userId string, jid string) error {
 
 func (i *instanceRepository) GetAllConnectedInstances() ([]*instance_model.Instance, error) {
 	var instances []*instance_model.Instance
-	err := i.db.Where("connected = ?", true).Find(&instances).Error
+	err := i.db.Where("(connected = ? OR (jid IS NOT NULL AND jid != '')) AND (disconnect_reason IS NULL OR disconnect_reason != ?)", true, "Disconnected by API").Find(&instances).Error
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +128,7 @@ func (i *instanceRepository) GetAllConnectedInstances() ([]*instance_model.Insta
 
 func (i *instanceRepository) GetAllConnectedInstancesByClientName(clientName string) ([]*instance_model.Instance, error) {
 	var instances []*instance_model.Instance
-	err := i.db.Where("connected = ? AND client_name = ?", true, clientName).Find(&instances).Error
+	err := i.db.Where("(connected = ? OR (jid IS NOT NULL AND jid != '')) AND (disconnect_reason IS NULL OR disconnect_reason != ?) AND client_name = ?", true, "Disconnected by API", clientName).Find(&instances).Error
 	if err != nil {
 		return nil, err
 	}

@@ -1,5 +1,42 @@
 # Evolution GO - Changelog
 
+## v0.7.3
+
+**Docker:** `dbadaniel/evogo:0.7.3` | `dbadaniel/evogo:latest`
+
+Release focused on WhatsApp protocol continuity (Nov/2026 handshake changes),
+long-running webhook `Message` event reliability, and automatic session
+restoration on container restarts.
+
+### 🚀 Highlights & Upgrades
+- **Official `go.mau.fi/whatsmeow` (Nov/2026 Protocol + Go 1.26)** — upgraded
+  `go.mau.fi/whatsmeow` from `v0.0.0-20260630180629-b572e5bcb92b` to
+  `v0.0.0-20261102152715-54038813c47f` and bumped the toolchain/Docker builder
+  to Go `1.26`. Resolves `405 Client outdated` handshake failures, adds socket
+  close detection during handshake, auto-reconnect when handshake receives no
+  response, and WhatsApp protobuf updates (`v1052556849`).
+- **Updated `whatsmeow` user API calls** — aligned `UpdateBlocklist`,
+  `GetBlocklist`, and `SetStatusMessage` in `pkg/user/service/user_service.go`
+  with the new upstream signatures.
+
+### 🐛 Bug Fixes
+- **Session stability & webhook `Message` continuity** — prevented duplicate
+  `StartClient` / `handleQRCodes` routines on concurrent `/instance/connect` and
+  `/instance/qr` calls, enabled native `whatsmeow` auto-reconnect
+  (`EnableAutoReconnect` + `InitialAutoReconnect`) and keepalive recovery
+  instead of tearing down and recreating clients on transient socket drops, and
+  replaced the unbuffered `killChannel` polling sleep with deterministic
+  per-client shutdown channels (`stopCh` / `qrStopCh`).
+- **Automatic session restoration on container restart** — `POSTGRES_AUTH_DB`
+  now automatically falls back to `POSTGRES_USERS_DB` (or `POSTGRES_HOST` /
+  `POSTGRES_DB` credentials) when omitted, `CONNECT_ON_STARTUP` defaults to
+  `true` while still respecting `CONNECT_ON_STARTUP=false`, and startup
+  reconnection restores all paired instances (`jid != ''`) that were not
+  explicitly disconnected via API (`Disconnected by API` or `Logged out`).
+- **Webhook & Event preservation on `/instance/connect`** — calling
+  `POST /instance/connect` with an empty or partial body no longer overwrites
+  previously configured `webhook` URL or subscribed `events`.
+
 ## v0.7.2
 
 Path-scoped port of upstream `0.7.2` onto this fork's Expertsa-specific work,

@@ -210,7 +210,16 @@ func (i instances) Connect(data *ConnectStruct, instance *instance_model.Instanc
 	i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Processing subscribe events: %v", instance.Id, data.Subscribe)
 
 	if len(data.Subscribe) == 0 {
-		subscribedEvents = append(subscribedEvents, event_types.MESSAGE)
+		if instance.Events != "" {
+			for _, arg := range strings.Split(instance.Events, ",") {
+				if event_types.IsEventType(arg) && !utils.Find(subscribedEvents, arg) {
+					subscribedEvents = append(subscribedEvents, arg)
+				}
+			}
+		}
+		if len(subscribedEvents) == 0 {
+			subscribedEvents = append(subscribedEvents, event_types.MESSAGE)
+		}
 	} else if len(data.Subscribe) > 0 && data.Subscribe[0] == "ALL" {
 		for _, event := range event_types.AllEventTypes {
 			subscribedEvents = append(subscribedEvents, event)
@@ -228,10 +237,19 @@ func (i instances) Connect(data *ConnectStruct, instance *instance_model.Instanc
 	eventString := strings.Join(subscribedEvents, ",")
 
 	instance.Events = eventString
-	instance.Webhook = data.WebhookUrl
-	instance.RabbitmqEnable = data.RabbitmqEnable
-	instance.NatsEnable = data.NatsEnable
-	instance.WebSocketEnable = data.WebSocketEnable
+	if data.WebhookUrl != "" {
+		instance.Webhook = data.WebhookUrl
+	}
+	if data.RabbitmqEnable != "" {
+		instance.RabbitmqEnable = data.RabbitmqEnable
+	}
+	if data.NatsEnable != "" {
+		instance.NatsEnable = data.NatsEnable
+	}
+	if data.WebSocketEnable != "" {
+		instance.WebSocketEnable = data.WebSocketEnable
+	}
+	instance.DisconnectReason = ""
 
 	err := i.instanceRepository.Update(instance)
 	if err != nil {
@@ -239,24 +257,22 @@ func (i instances) Connect(data *ConnectStruct, instance *instance_model.Instanc
 		return nil, "", "", err
 	}
 
-	// Verifica se a instância já está rodando
-	isInstanceRunning := i.clientPointer[instance.Id] != nil
+	// Verifica se a instância já está conectada ou inicializando
+	client := i.clientPointer[instance.Id]
+	isInstanceRunning := (client != nil && client.IsConnected()) || i.whatsmeowService.IsInstanceStarting(instance.Id)
 
-	// Sincroniza as configurações na instância em execução (se já estiver conectada)
-	err = i.whatsmeowService.UpdateInstanceSettings(instance.Id)
-	if err != nil {
+	// Sincroniza as configurações na instância em execução (se já estiver em runtime)
+	if err := i.whatsmeowService.UpdateInstanceSettings(instance.Id); err != nil {
 		i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Instance not in runtime yet, will be updated when connected", instance.Id)
-		isInstanceRunning = false
 	} else {
 		i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Instance settings updated successfully in runtime", instance.Id)
-		isInstanceRunning = true
 	}
 
 	// Se a instância não estiver rodando, inicia uma nova
 	if !isInstanceRunning {
 		i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Starting new client instance", instance.Id)
 
-		i.killChannel[instance.Id] = make(chan bool)
+		i.killChannel[instance.Id] = make(chan bool, 1)
 
 		clientData := &whatsmeow_service.ClientData{
 			Instance:      instance,
@@ -283,26 +299,10 @@ func (i instances) Connect(data *ConnectStruct, instance *instance_model.Instanc
 		i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Instance already running, settings updated without restarting client", instance.Id)
 	}
 
-	// logger.LogInfo("Waiting 1 seconds")
-	// time.Sleep(1000 * time.Millisecond)
-
-	// if i.clientPointer[instance.Id] != nil {
-	// 	if !i.clientPointer[instance.Id].IsConnected() {
-	// 		return instance, "", "", fmt.Errorf("failed to connect")
-	// 	}
-	// } else {
-	// 	return instance, "", "", fmt.Errorf("failed to connect")
-	// }
-
 	return instance, instance.Jid, eventString, nil
 }
 
 func (i instances) Reconnect(instance *instance_model.Instance) error {
-	_, err := i.ensureClientConnected(instance.Id)
-	if err != nil {
-		return err
-	}
-
 	return i.whatsmeowService.ReconnectClient(instance.Id)
 }
 
@@ -315,7 +315,12 @@ func (i instances) Disconnect(instance *instance_model.Instance) (*instance_mode
 	if client.IsConnected() {
 		if client.IsLoggedIn() {
 			i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Disconnection successful", instance.Id)
-			i.killChannel[instance.Id] <- true
+			if killChan := i.killChannel[instance.Id]; killChan != nil {
+				select {
+				case killChan <- true:
+				default:
+				}
+			}
 
 			// Do not clear instance.Events on disconnect. Wiping subscriptions
 			// leaves the instance "connected" after reconnect with an empty
@@ -348,14 +353,18 @@ func (i instances) Logout(instance *instance_model.Instance) (*instance_model.In
 		}
 
 		instance.Connected = false
+		instance.Jid = ""
+		instance.DisconnectReason = "Logged out"
 		err = i.instanceRepository.Update(instance)
 		if err != nil {
 			return instance, err
 		}
 
-		select {
-		case i.killChannel[instance.Id] <- true:
-		case <-time.After(5 * time.Second):
+		if killChan := i.killChannel[instance.Id]; killChan != nil {
+			select {
+			case killChan <- true:
+			default:
+			}
 		}
 
 		delete(i.clientPointer, instance.Id)
@@ -368,9 +377,11 @@ func (i instances) Logout(instance *instance_model.Instance) (*instance_model.In
 	if client.IsConnected() {
 		client.Disconnect()
 
-		select {
-		case i.killChannel[instance.Id] <- true:
-		case <-time.After(5 * time.Second):
+		if killChan := i.killChannel[instance.Id]; killChan != nil {
+			select {
+			case killChan <- true:
+			default:
+			}
 		}
 
 		delete(i.clientPointer, instance.Id)
@@ -417,33 +428,29 @@ func (i instances) GetQr(instance *instance_model.Instance) (*QrcodeStruct, erro
 	logger := i.loggerWrapper.GetLogger(instance.Id)
 	client := i.clientPointer[instance.Id]
 
-	// Se não há cliente ou o cliente está logado, precisamos iniciar um novo cliente
-	if client == nil || client.IsLoggedIn() {
-		if client != nil && client.IsLoggedIn() {
-			logger.LogInfo("[%s] Client is logged in, starting new instance for QR code", instance.Id)
-		} else {
-			logger.LogInfo("[%s] No client found, starting new instance for QR code", instance.Id)
-		}
+	if client != nil && (client.IsLoggedIn() || client.Store.ID != nil) {
+		return nil, fmt.Errorf("session already logged in")
+	}
 
-		// Iniciar nova instância para gerar QR code
+	if i.whatsmeowService.IsInstanceStarting(instance.Id) {
+		logger.LogInfo("[%s] Instance is already starting, waiting for QR code generation...", instance.Id)
+		time.Sleep(3 * time.Second)
+	} else if client == nil || !client.IsConnected() {
+		logger.LogInfo("[%s] Starting instance for QR code", instance.Id)
+
 		err := i.whatsmeowService.StartInstance(instance.Id)
 		if err != nil {
 			logger.LogError("[%s] Failed to start instance: %v", instance.Id, err)
 			return nil, fmt.Errorf("failed to start instance: %w", err)
 		}
 
-		// Aguardar um pouco para o cliente iniciar e gerar QR code
 		logger.LogInfo("[%s] Waiting for QR code generation...", instance.Id)
 		time.Sleep(3 * time.Second)
+	}
 
-		// Verificar novamente se há cliente
-		client = i.clientPointer[instance.Id]
-		if client != nil && client.IsLoggedIn() {
-			return nil, fmt.Errorf("session already logged in")
-		}
-	} else if !client.IsConnected() {
-		// Se o cliente existe mas não está conectado, pode estar aguardando QR code
-		logger.LogInfo("[%s] Client exists but not connected, checking for existing QR code", instance.Id)
+	client = i.clientPointer[instance.Id]
+	if client != nil && (client.IsLoggedIn() || client.Store.ID != nil) {
+		return nil, fmt.Errorf("session already logged in")
 	}
 
 	// Buscar instância atualizada do banco para pegar o QR code mais recente
@@ -581,14 +588,7 @@ func (i instances) Delete(id string) error {
 		i.clientPointer[instance.Id].Disconnect()
 	}
 
-	// Limpar todos os recursos da instância antes de deletar
-	delete(i.clientPointer, instance.Id)
-	if i.killChannel[instance.Id] != nil {
-		close(i.killChannel[instance.Id])
-		delete(i.killChannel, instance.Id)
-	}
-
-	// Limpar cache via whatsmeow service
+	// Limpar cache e recursos via whatsmeow service
 	err = i.whatsmeowService.ClearInstanceCache(instance.Id, instance.Token)
 	if err != nil {
 		i.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Failed to clear instance cache: %v", instance.Id, err)
@@ -737,7 +737,7 @@ func (i instances) ForceReconnect(instanceId string, number string) error {
 		delete(i.killChannel, instance.Id)
 	}
 
-	i.killChannel[instance.Id] = make(chan bool)
+	i.killChannel[instance.Id] = make(chan bool, 1)
 	go i.whatsmeowService.StartClient(clientData)
 
 	time.Sleep(2 * time.Second)
