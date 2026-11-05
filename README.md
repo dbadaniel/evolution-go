@@ -2,6 +2,9 @@
   <img src="./Exsa-azul.png" alt="Expertsa" width="480"/>
   <h1>Evolution Go — Expertsa Edition</h1>
   <p><strong>Fork de produção focado em solidez, estabilidade de sessão e entrega contínua de desenvolvimento</strong></p>
+  <img src="./Exsa-azul.png" alt="Expertsa" width="480"/>
+  <h1>Evolution Go — Expertsa Edition</h1>
+  <p><strong>Fork de produção focado em solidez, estabilidade de sessão e entrega contínua de eventos para o ecossistema Evolution Go</strong></p>
 
 [![Docker Image](https://img.shields.io/badge/Docker-dbadaniel%2Fevogo:0.7.3-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/dbadaniel/evogo)
 [![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://golang.org/)
