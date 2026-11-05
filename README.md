@@ -1,9 +1,6 @@
 <div align="center">
   <img src="./Exsa-azul.png" alt="Expertsa" width="480"/>
   <h1>Evolution Go — Expertsa Edition</h1>
-  <p><strong>Fork de produção focado em solidez, estabilidade de sessão e entrega contínua de desenvolvimento</strong></p>
-  <img src="./Exsa-azul.png" alt="Expertsa" width="480"/>
-  <h1>Evolution Go — Expertsa Edition</h1>
   <p><strong>Fork de produção focado em solidez, estabilidade de sessão e entrega contínua de eventos para o ecossistema Evolution Go</strong></p>
 
 [![Docker Image](https://img.shields.io/badge/Docker-dbadaniel%2Fevogo:0.7.3-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/dbadaniel/evogo)
@@ -11,9 +8,6 @@
 [![whatsmeow](https://img.shields.io/badge/whatsmeow-Nov%2F2026%20Official-25D366?logo=whatsapp&logoColor=white)](https://github.com/tulir/whatsmeow)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](./LICENSE)
 [![Upstream](https://img.shields.io/badge/Upstream-EvolutionAPI%2Fevolution--go-orange)](https://github.com/EvolutionAPI/evolution-go)
-
-  <br/>
-  <img src="./public/images/cover.png" width="360" alt="Evolution Go"/>
 </div>
 
 ---
