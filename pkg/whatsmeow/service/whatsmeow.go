@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/png"
 	"io"
@@ -218,6 +219,32 @@ func (w *whatsmeowService) ReconnectClient(instanceId string) error {
 	w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Starting reconnection process - simulating restart", instanceId)
 
 	w.mu.Lock()
+	if w.startingInstances != nil && w.startingInstances[instanceId] {
+		w.mu.Unlock()
+		w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance is already starting, waiting for connection instead of tearing down", instanceId)
+		time.Sleep(3 * time.Second)
+		return nil
+	}
+
+	// Se já existe um cliente autenticado em memória apenas desconectado, tenta reconectar in-place primeiro
+	// preservando o eventHandler e a sessão ativa sem destruir o MyClient.
+	if existingClient, exists := w.clientPointer[instanceId]; exists && existingClient != nil && existingClient.Store != nil && existingClient.Store.ID != nil {
+		if existingClient.IsConnected() {
+			w.mu.Unlock()
+			w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Client is already connected, skipping ReconnectClient teardown", instanceId)
+			return nil
+		}
+		w.mu.Unlock()
+		w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Attempting in-place Connect() on existing client before full restart", instanceId)
+		if err := existingClient.Connect(); err == nil || errors.Is(err, whatsmeow.ErrAlreadyConnected) {
+			if existingClient.WaitForConnection(5 * time.Second) {
+				w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] In-place Connect() succeeded", instanceId)
+				return nil
+			}
+		}
+		w.mu.Lock()
+	}
+
 	// Passo 1: Limpar conexão existente se houver
 	if client, exists := w.clientPointer[instanceId]; exists && client != nil {
 		w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Disconnecting existing client", instanceId)
@@ -403,11 +430,8 @@ func (w *whatsmeowService) StartClient(cd *ClientData) {
 		oldMyCli.stop()
 	}
 
-	killChan := w.killChannel[instanceID]
-	if killChan == nil {
-		killChan = make(chan bool, 1)
-		w.killChannel[instanceID] = killChan
-	}
+	killChan := make(chan bool, 1)
+	w.killChannel[instanceID] = killChan
 	w.startingInstances[instanceID] = true
 	w.mu.Unlock()
 
@@ -571,6 +595,21 @@ func (w *whatsmeowService) StartClient(cd *ClientData) {
 	client.EnableAutoReconnect = true
 	client.InitialAutoReconnect = true
 	client.AutoTrustIdentity = true
+
+	// Recarrega a instância do banco caso configurações (Webhook, Events, etc.)
+	// tenham sido atualizadas enquanto StartClient estava inicializando.
+	if latestInstance, err := w.instanceRepository.GetInstanceByID(instanceID); err == nil && latestInstance != nil {
+		if latestInstance.Jid == "" && cd.Instance.Jid != "" {
+			latestInstance.Jid = cd.Instance.Jid
+		}
+		if latestInstance.OsName == "" && cd.Instance.OsName != "" {
+			latestInstance.OsName = cd.Instance.OsName
+		}
+		cd.Instance = latestInstance
+		cd.Subscriptions = parseEventSubscriptions(latestInstance.Events)
+	} else if len(cd.Subscriptions) == 0 {
+		cd.Subscriptions = parseEventSubscriptions(cd.Instance.Events)
+	}
 
 	mycli := &MyClient{
 		service:            w,
@@ -1042,6 +1081,19 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			if err != nil {
 				mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Error updating instance: %s", mycli.Instance.Id, err)
 			}
+
+			// Restaura o userInfoCache caso tenha sido limpo em um evento Disconnected anterior
+			if mycli.userInfoCache != nil && mycli.Instance != nil {
+				v := Values{map[string]string{
+					"Id":     mycli.Instance.Id,
+					"Jid":    mycli.Instance.Jid,
+					"Token":  mycli.Instance.Token,
+					"Events": mycli.Instance.Events,
+					"osName": mycli.Instance.OsName,
+					"Proxy":  mycli.Instance.Proxy,
+				}}
+				mycli.userInfoCache.Set(mycli.Instance.Token, v, cache.NoExpiration)
+			}
 		}
 	case *events.PairSuccess:
 		mycli.stopQR()
@@ -1229,17 +1281,6 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 
 		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] ===== MESSAGE RECEIVED ===== ID: %s, From: %s, Type: %s, Size: %s", mycli.userID, evt.Info.ID, evt.Info.Chat.String(), evt.Info.Type, messageSize)
 
-		// se readMessages for true ele marca como lida
-		if mycli.Instance.ReadMessages {
-			messageIDs := []string{evt.Info.ID}
-			err := mycli.WAClient.MarkRead(context.Background(), messageIDs, time.Now(), evt.Info.Sender, evt.Info.Sender)
-			if err != nil {
-				mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to auto-mark message as read: %v", mycli.userID, err)
-			} else {
-				mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-marked message as read from %s", mycli.userID, evt.Info.Chat.String())
-			}
-		}
-
 		// se ignoreStatus for true e o chat for broadcast ou o id for broadcast retorna
 		if mycli.Instance.IgnoreStatus && (strings.Contains(evt.Info.Chat.String(), "@broadcast") || strings.Contains(evt.Info.ID, "@broadcast")) {
 			return
@@ -1260,11 +1301,23 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			return
 		}
 
-		// Trata o caso especial onde Sender é @lid e SenderAlt é @s.whatsapp.net
+		// Trata o caso especial onde Sender é @lid e SenderAlt é @s.whatsapp.net (ou está mapeado no LIDStore)
 		// Neste caso, devemos inverter: Sender e Chat devem ser @s.whatsapp.net, SenderAlt deve ser @lid
 		senderStr := evt.Info.Sender.String()
 		senderAltStr := evt.Info.SenderAlt.String()
 		chatStr := evt.Info.Chat.String()
+
+		// Se o WhatsApp omitiu sender_pn no envelope (SenderAlt vazio), consulta o mapeamento LID->PN local do whatsmeow
+		if strings.Contains(senderStr, "@lid") && !strings.Contains(senderAltStr, "@s.whatsapp.net") {
+			if mycli.WAClient != nil && mycli.WAClient.Store != nil && mycli.WAClient.Store.LIDs != nil {
+				lidCtx, lidCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				if pnJID, err := mycli.WAClient.Store.LIDs.GetPNForLID(lidCtx, evt.Info.Sender.ToNonAD()); err == nil && !pnJID.IsEmpty() {
+					senderAltStr = pnJID.String()
+					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Resolved LID %s to PN %s from LID store", mycli.userID, senderStr, senderAltStr)
+				}
+				lidCancel()
+			}
+		}
 
 		// Preserva os dados originais do remetente e dispositivo antes da limpeza
 		rawSenderStr := senderStr
@@ -1323,17 +1376,40 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			if cleanedLID, err := types.ParseJID(cleanSenderAlt); err == nil {
 				evt.Info.SenderAlt = cleanedLID
 			}
+
+			// Se o Chat for @lid (ex.: mensagem enviada por mim para um contato @lid), tenta resolver para @s.whatsapp.net
+			if strings.Contains(chatStr, "@lid") {
+				recipientAltStr := evt.Info.RecipientAlt.String()
+				if !strings.Contains(recipientAltStr, "@s.whatsapp.net") && mycli.WAClient != nil && mycli.WAClient.Store != nil && mycli.WAClient.Store.LIDs != nil {
+					lidCtx, lidCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					if pnJID, err := mycli.WAClient.Store.LIDs.GetPNForLID(lidCtx, evt.Info.Chat.ToNonAD()); err == nil && !pnJID.IsEmpty() {
+						recipientAltStr = pnJID.String()
+					}
+					lidCancel()
+				}
+				if strings.Contains(recipientAltStr, "@s.whatsapp.net") {
+					if cleanedChatJID, err := types.ParseJID(cleanSenderID(recipientAltStr)); err == nil {
+						evt.Info.Chat = cleanedChatJID
+					}
+				}
+			}
 		}
 
 		// Auto-marca mensagens como lidas se configurado
 		if mycli.Instance.ReadMessages && !evt.Info.IsFromMe {
+			msgID := evt.Info.ID
+			msgTimestamp := evt.Info.Timestamp
+			msgChat := evt.Info.Chat
+			msgSender := evt.Info.Sender
 			go func() {
 				time.Sleep(1 * time.Second) // Pequeno delay para parecer mais natural
-				err := mycli.WAClient.MarkRead(context.Background(), []types.MessageID{evt.Info.ID}, evt.Info.Timestamp, evt.Info.Chat, evt.Info.Sender)
+				readCtx, readCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer readCancel()
+				err := mycli.WAClient.MarkRead(readCtx, []types.MessageID{msgID}, msgTimestamp, msgChat, msgSender)
 				if err != nil {
 					mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to auto-mark message as read: %v", mycli.userID, err)
 				} else {
-					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-marked message as read from %s", mycli.userID, evt.Info.Chat.String())
+					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-marked message as read from %s", mycli.userID, msgChat.String())
 				}
 			}()
 		}
@@ -1393,7 +1469,15 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 				fmt.Printf("[POLL DEBUG] ✅ mycli.WAClient is initialized: %s\n", mycli.WAClient.Store.ID)
 			}
 
-			decrypted, err := mycli.clientPointer[mycli.userID].DecryptPollVote(context.Background(), evt)
+			var decrypted *waE2E.PollVoteMessage
+			var err error
+			if mycli.WAClient != nil {
+				pollCtx, pollCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				decrypted, err = mycli.WAClient.DecryptPollVote(pollCtx, evt)
+				pollCancel()
+			} else {
+				err = fmt.Errorf("WAClient is nil")
+			}
 			if err != nil {
 				mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to decrypt vote: %v", mycli.userID, err)
 			} else {
@@ -1589,27 +1673,27 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 					}
 					// Handle associated child media messages
 				} else if associatedImg != nil {
-					data, err = mycli.WAClient.Download(context.Background(), associatedImg)
+					data, err = mycli.WAClient.Download(downloadCtx, associatedImg)
 					extension = ".jpg"
 					mimeType = "image/jpeg"
 					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Processing associated child image message", mycli.userID)
 				} else if associatedAudio != nil {
-					data, err = mycli.WAClient.Download(context.Background(), associatedAudio)
+					data, err = mycli.WAClient.Download(downloadCtx, associatedAudio)
 					extension = ".ogg"
 					mimeType = "audio/ogg"
 					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Processing associated child audio message", mycli.userID)
 				} else if associatedDocument != nil {
-					data, err = mycli.WAClient.Download(context.Background(), associatedDocument)
+					data, err = mycli.WAClient.Download(downloadCtx, associatedDocument)
 					extension = getExtensionFromMimeType(associatedDocument.GetMimetype())
 					mimeType = associatedDocument.GetMimetype()
 					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Processing associated child document message", mycli.userID)
 				} else if associatedVideo != nil {
-					data, err = mycli.WAClient.Download(context.Background(), associatedVideo)
+					data, err = mycli.WAClient.Download(downloadCtx, associatedVideo)
 					extension = ".mp4"
 					mimeType = "video/mp4"
 					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Processing associated child video message", mycli.userID)
 				} else if associatedSticker != nil {
-					data, err = mycli.WAClient.Download(context.Background(), associatedSticker)
+					data, err = mycli.WAClient.Download(downloadCtx, associatedSticker)
 					extension = ".png"
 					mimeType = "image/png"
 					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Processing associated child sticker message", mycli.userID)
@@ -1674,7 +1758,9 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 
 						mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Uploading to S3/Minio - ID: %s, FileName: %s, Size: %d bytes", mycli.userID, evt.Info.ID, fileName, len(data))
 
-						mediaURL, err := mycli.mediaStorage.Store(context.Background(), data, fileName, mimeType)
+						storeCtx, storeCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+						mediaURL, err := mycli.mediaStorage.Store(storeCtx, data, fileName, mimeType)
+						storeCancel()
 						storageDuration := time.Since(storageStart)
 
 						if err != nil {
@@ -1707,7 +1793,9 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 
 		isGroup := strings.HasSuffix(evt.Info.Chat.String(), "@g.us")
 		if isGroup {
-			groupData, err := mycli.WAClient.GetGroupInfo(context.Background(), evt.Info.Chat)
+			groupCtx, groupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			groupData, err := mycli.WAClient.GetGroupInfo(groupCtx, evt.Info.Chat)
+			groupCancel()
 			if err == nil {
 				dataMap["groupData"] = groupData
 			}
@@ -2289,7 +2377,37 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	}
 }
 
+func parseEventSubscriptions(eventsStr string) []string {
+	var subscriptions []string
+	for _, rawArg := range strings.Split(eventsStr, ",") {
+		arg := strings.ToUpper(strings.TrimSpace(rawArg))
+		if arg == "" {
+			continue
+		}
+		if arg == "ALL" {
+			if !utils.Find(subscriptions, "ALL") {
+				subscriptions = append(subscriptions, "ALL")
+			}
+			continue
+		}
+		if !event_types.IsEventType(arg) {
+			continue
+		}
+		if !utils.Find(subscriptions, arg) {
+			subscriptions = append(subscriptions, arg)
+		}
+	}
+	if len(subscriptions) == 0 {
+		subscriptions = append(subscriptions, event_types.MESSAGE)
+	}
+	return subscriptions
+}
+
 func (w *whatsmeowService) CallWebhook(instance *instance_model.Instance, queueName string, jsonData []byte) {
+	if instance == nil {
+		return
+	}
+
 	var data map[string]interface{}
 	if err := json.Unmarshal(jsonData, &data); err != nil {
 		return
@@ -2300,24 +2418,14 @@ func (w *whatsmeowService) CallWebhook(instance *instance_model.Instance, queueN
 		return
 	}
 
-	eventArray := strings.Split(instance.Events, ",")
-
-	var subscriptions []string
-
-	if len(eventArray) < 1 {
-		subscriptions = append(subscriptions, event_types.MESSAGE)
-	} else {
-		for _, arg := range eventArray {
-			if !event_types.IsEventType(arg) {
-				w.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Message type discarded: %s", instance.Id, arg)
-				continue
-			}
-			if !utils.Find(subscriptions, arg) {
-				subscriptions = append(subscriptions, arg)
-			}
-
+	// Se o objeto em memória estiver sem Webhook ou sem Events configurados, recarrega do banco
+	if (instance.Webhook == "" && instance.RabbitmqEnable == "" && instance.NatsEnable == "" && instance.WebSocketEnable == "") || strings.TrimSpace(instance.Events) == "" {
+		if freshInstance, err := w.instanceRepository.GetInstanceByID(instance.Id); err == nil && freshInstance != nil {
+			instance = freshInstance
 		}
 	}
+
+	subscriptions := parseEventSubscriptions(instance.Events)
 
 	if contains(subscriptions, "ALL") {
 		w.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Event received of type %s", instance.Id, eventType)
@@ -2558,28 +2666,7 @@ func (w *whatsmeowService) StartInstance(instanceId string) error {
 
 	w.userInfoCache.Set(instance.Token, v, cache.NoExpiration)
 
-	eventArray := strings.Split(instance.Events, ",")
-
-	var subscribedEvents []string
-
-	if len(eventArray) < 1 {
-		subscribedEvents = append(subscribedEvents, event_types.MESSAGE)
-	} else {
-		for _, arg := range eventArray {
-			if !event_types.IsEventType(arg) {
-				w.loggerWrapper.GetLogger(instanceId).LogWarn("[%s] Message type discarded: %s", instanceId, arg)
-				continue
-			}
-			if !utils.Find(subscribedEvents, arg) {
-				subscribedEvents = append(subscribedEvents, arg)
-			}
-
-		}
-	}
-
-	w.mu.Lock()
-	w.killChannel[instance.Id] = make(chan bool, 1)
-	w.mu.Unlock()
+	subscribedEvents := parseEventSubscriptions(instance.Events)
 
 	clientData := &ClientData{
 		Instance:      instance,
@@ -2866,14 +2953,15 @@ func fetchWhatsAppWebVersion() (*clientVersion, error) {
 		}
 	}
 
-	// Se chegou aqui, nenhum padrão funcionou - log do conteúdo para debug
-	// Mostra apenas uma parte para não logar muito
-	previewLength := 500
-	if len(content) > previewLength {
-		content = content[:previewLength] + "..."
+	// Se chegou aqui, nenhum padrão funcionou - faz cache da versão de fallback por 1h
+	// para evitar atrasar reconexões subsequentes quando a CDN da Meta bloqueia /sw.js
+	cachedWebVersion = &clientVersion{
+		Major: 2,
+		Minor: 3000,
+		Patch: 1052812464,
 	}
-
-	return nil, fmt.Errorf("could not find client revision in the fetched content. Content preview: %s", content)
+	cachedWebVersionAt = time.Now()
+	return cachedWebVersion, nil
 }
 
 func (w *whatsmeowService) UpdateInstanceSettings(instanceId string) error {
@@ -2903,24 +2991,7 @@ func (w *whatsmeowService) UpdateInstanceSettings(instanceId string) error {
 	myClient.websocketEnable = instance.WebSocketEnable
 
 	// Atualiza as subscriptions se os eventos mudaram
-	eventArray := strings.Split(instance.Events, ",")
-	var subscribedEvents []string
-
-	if len(eventArray) < 1 {
-		subscribedEvents = append(subscribedEvents, event_types.MESSAGE)
-	} else {
-		for _, arg := range eventArray {
-			if !event_types.IsEventType(arg) {
-				w.loggerWrapper.GetLogger(instanceId).LogWarn("[%s] Message type discarded: %s", instanceId, arg)
-				continue
-			}
-			if !utils.Find(subscribedEvents, arg) {
-				subscribedEvents = append(subscribedEvents, arg)
-			}
-		}
-	}
-
-	myClient.subscriptions = subscribedEvents
+	myClient.subscriptions = parseEventSubscriptions(instance.Events)
 
 	// Atualiza o cache do userInfo com as novas configurações
 	v := Values{map[string]string{

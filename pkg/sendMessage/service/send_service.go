@@ -299,8 +299,18 @@ func (s *sendService) ensureClientConnected(instanceId string) (*whatsmeow.Clien
 			return nil, errors.New("no active session found")
 		}
 
-		s.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance started, waiting 2 seconds...", instanceId)
-		time.Sleep(2 * time.Second)
+		s.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance started, waiting for connection...", instanceId)
+		for i := 0; i < 16; i++ {
+			time.Sleep(500 * time.Millisecond)
+			client = s.clientPointer[instanceId]
+			if client != nil && client.IsConnected() {
+				break
+			}
+			if !s.whatsmeowService.IsInstanceStarting(instanceId) && client != nil {
+				_ = client.WaitForConnection(3 * time.Second)
+				break
+			}
+		}
 
 		client = s.clientPointer[instanceId]
 		s.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking new client - Exists: %v, Connected: %v",
@@ -316,10 +326,21 @@ func (s *sendService) ensureClientConnected(instanceId string) (*whatsmeow.Clien
 			return nil, errors.New("no active session found")
 		}
 	} else if !client.IsConnected() {
-		s.loggerWrapper.GetLogger(instanceId).LogError("[%s] Existing client is disconnected - Connected status: %v",
-			instanceId,
-			client.IsConnected())
-		return nil, errors.New("client disconnected")
+		s.loggerWrapper.GetLogger(instanceId).LogWarn("[%s] Existing client is transiently disconnected, waiting up to 5s for auto-reconnect...", instanceId)
+		if !client.WaitForConnection(5 * time.Second) {
+			if client.Store != nil && client.Store.ID != nil {
+				s.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Attempting in-place Connect() on existing client", instanceId)
+				if err := client.Connect(); err == nil || errors.Is(err, whatsmeow.ErrAlreadyConnected) {
+					_ = client.WaitForConnection(5 * time.Second)
+				}
+			}
+		}
+		if !client.IsConnected() {
+			s.loggerWrapper.GetLogger(instanceId).LogError("[%s] Existing client is disconnected - Connected status: %v",
+				instanceId,
+				client.IsConnected())
+			return nil, errors.New("client disconnected")
+		}
 	}
 
 	s.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Client successfully validated - Connected: %v", instanceId, client.IsConnected())

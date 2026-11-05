@@ -16,6 +16,7 @@ import (
 type webhookProducer struct {
 	url           string
 	loggerWrapper *logger_wrapper.LoggerManager
+	httpClient    *http.Client
 }
 
 func NewWebhookProducer(
@@ -25,6 +26,9 @@ func NewWebhookProducer(
 	return &webhookProducer{
 		url:           url,
 		loggerWrapper: loggerWrapper,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
 }
 
@@ -72,7 +76,10 @@ func (p *webhookProducer) sendWebhook(url string, body []byte, userID string) (e
 
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := p.httpClient
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err, nil, 0

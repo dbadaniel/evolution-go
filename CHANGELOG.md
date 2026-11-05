@@ -24,9 +24,19 @@ restoration on container restarts.
   `StartClient` / `handleQRCodes` routines on concurrent `/instance/connect` and
   `/instance/qr` calls, enabled native `whatsmeow` auto-reconnect
   (`EnableAutoReconnect` + `InitialAutoReconnect`) and keepalive recovery
-  instead of tearing down and recreating clients on transient socket drops, and
-  replaced the unbuffered `killChannel` polling sleep with deterministic
-  per-client shutdown channels (`stopCh` / `qrStopCh`).
+  instead of tearing down and recreating clients on transient socket drops,
+  allocated a fresh `killChannel` per `StartClient` so leftover kill signals
+  never kill a newly connected client, and replaced `ensureClientConnected`
+  destructive teardown with in-place connection wait/recovery.
+- **LID (`@lid`) to Phone JID (`@s.whatsapp.net`) fallback via `LIDStore`** —
+  when WhatsApp omits `sender_pn` (`SenderAlt`) on subsequent messages from a
+  `@lid` contact, `myEventHandler` now queries `WAClient.Store.LIDs.GetPNForLID`
+  so `Sender` and `Chat` are consistently resolved to `@s.whatsapp.net`.
+- **Non-blocking `myEventHandler` & fallback Web version caching** — removed
+  duplicate synchronous `MarkRead` inside `case *events.Message`, added timeouts
+  to `GetGroupInfo`, `DecryptPollVote`, and media storage calls, and cached the
+  fallback WhatsApp Web version when `web.whatsapp.com/sw.js` returns an HTML
+  error page.
 - **Automatic session restoration on container restart** — `POSTGRES_AUTH_DB`
   now automatically falls back to `POSTGRES_USERS_DB` (or `POSTGRES_HOST` /
   `POSTGRES_DB` credentials) when omitted, `CONNECT_ON_STARTUP` defaults to
