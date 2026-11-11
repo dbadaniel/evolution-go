@@ -32,6 +32,7 @@ type InstanceService interface {
 	Disconnect(instance *instance_model.Instance) (*instance_model.Instance, error)
 	Logout(instance *instance_model.Instance) (*instance_model.Instance, error)
 	Status(instance *instance_model.Instance) (*StatusStruct, error)
+	AccountType(ctx context.Context, instance *instance_model.Instance) (*AccountTypeStruct, error)
 	GetQr(instance *instance_model.Instance) (*QrcodeStruct, error)
 	Pair(data *PairStruct, instance *instance_model.Instance) (*PairReturnStruct, error)
 	GetAll() ([]*instance_model.Instance, error)
@@ -88,6 +89,23 @@ type StatusStruct struct {
 	myJid     *types.JID
 	Name      string
 }
+
+const (
+	AccountTypeBusiness = "business"
+	AccountTypePersonal = "personal"
+	AccountTypeUnknown  = "unknown"
+
+	accountTypeLookupTimeout = 10 * time.Second
+)
+
+type AccountTypeStruct struct {
+	JID          string `json:"jid"`
+	AccountType  string `json:"accountType"`
+	IsBusiness   *bool  `json:"isBusiness"`
+	BusinessName string `json:"businessName"`
+}
+
+type businessProfileLookup func(context.Context, types.JID) (*types.BusinessProfile, error)
 
 type QrcodeStruct struct {
 	Qrcode         string `json:"qrcode"`
@@ -422,6 +440,76 @@ func (i instances) Status(instance *instance_model.Instance) (*StatusStruct, err
 	}
 
 	return status, nil
+}
+
+func (i instances) AccountType(ctx context.Context, instance *instance_model.Instance) (*AccountTypeStruct, error) {
+	if instance == nil {
+		return nil, errors.New("instance not found")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	client := i.clientPointer[instance.Id]
+	if client == nil {
+		return nil, errors.New("no active session found")
+	}
+	if !client.IsConnected() {
+		return nil, errors.New("client disconnected")
+	}
+	if !client.IsLoggedIn() || client.Store == nil || client.Store.ID == nil {
+		return nil, errors.New("client is not logged in to WhatsApp")
+	}
+
+	jid := client.Store.ID.ToNonAD()
+	if jid.User == "" || jid.Server == "" {
+		return nil, errors.New("invalid connected account jid")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, accountTypeLookupTimeout)
+	defer cancel()
+
+	return classifyAccountType(ctx, jid, client.Store.BusinessName, client.GetBusinessProfile), nil
+}
+
+func classifyAccountType(ctx context.Context, jid types.JID, businessName string, lookup businessProfileLookup) *AccountTypeStruct {
+	result := &AccountTypeStruct{
+		JID:          jid.String(),
+		AccountType:  AccountTypeUnknown,
+		BusinessName: strings.TrimSpace(businessName),
+	}
+
+	if result.BusinessName != "" {
+		isBusiness := true
+		result.AccountType = AccountTypeBusiness
+		result.IsBusiness = &isBusiness
+		return result
+	}
+
+	profile, err := lookup(ctx, jid)
+	if err == nil && profile != nil && profile.JID.ToNonAD() == jid {
+		isBusiness := true
+		result.AccountType = AccountTypeBusiness
+		result.IsBusiness = &isBusiness
+		return result
+	}
+
+	if isMissingBusinessProfile(err) {
+		isBusiness := false
+		result.AccountType = AccountTypePersonal
+		result.IsBusiness = &isBusiness
+	}
+
+	return result
+}
+
+func isMissingBusinessProfile(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var missingElement *whatsmeow.ElementMissingError
+	return errors.As(err, &missingElement) || errors.Is(err, whatsmeow.ErrIQNotFound)
 }
 
 func (i instances) GetQr(instance *instance_model.Instance) (*QrcodeStruct, error) {

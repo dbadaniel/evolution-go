@@ -20,6 +20,7 @@ type InstanceHandler interface {
 	Logout(ctx *gin.Context)
 	Delete(ctx *gin.Context)
 	Status(ctx *gin.Context)
+	AccountType(ctx *gin.Context)
 	Qr(ctx *gin.Context)
 	All(ctx *gin.Context)
 	Info(ctx *gin.Context)
@@ -35,6 +36,11 @@ type InstanceHandler interface {
 type instanceHandler struct {
 	config          *config.Config
 	instanceService instance_service.InstanceService
+}
+
+type AccountTypeResponse struct {
+	Message string                              `json:"message"`
+	Data    *instance_service.AccountTypeStruct `json:"data"`
 }
 
 // Create a new instance
@@ -260,6 +266,38 @@ func (i *instanceHandler) Status(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, gin.H{"message": "success", "data": status})
+}
+
+// Get connected account type
+// @Summary Get connected account type
+// @Description Detect whether the connected WhatsApp account is business, personal, or unknown
+// @Tags Instance
+// @Produce json
+// @Success 200 {object} AccountTypeResponse "Connected account type"
+// @Failure 400 {object} gin.H "Instance is not connected or logged in"
+// @Failure 401 {object} gin.H "Not authorized"
+// @Failure 404 {object} gin.H "Instance not found"
+// @Router /instance/account-type [get]
+func (i *instanceHandler) AccountType(ctx *gin.Context) {
+	getInstance, exists := ctx.Get("instance")
+	if !exists {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "instance not found"})
+		return
+	}
+
+	instance, ok := getInstance.(*instance_model.Instance)
+	if !ok || instance == nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "instance not found"})
+		return
+	}
+
+	accountType, err := i.instanceService.AccountType(ctx.Request.Context(), instance)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"message": "success", "data": accountType})
 }
 
 // Get instance QR code

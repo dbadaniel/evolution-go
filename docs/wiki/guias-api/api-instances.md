@@ -21,6 +21,7 @@ Uma **instância** representa uma conexão individual com o WhatsApp. Cada inst�
 - `GET /instance/qr` - Obter QR Code
 - `POST /instance/pair` - Conectar via código de pareamento
 - `GET /instance/status` - Status da conexão
+- `GET /instance/account-type` - Identificar se a conta conectada é Business ou pessoal
 - `POST /instance/disconnect` - Desconectar
 - `POST /instance/reconnect` - Reconectar
 - `DELETE /instance/logout` - Fazer logout
@@ -278,6 +279,70 @@ apikey: TOKEN-DA-INSTANCIA
 ### Exemplo cURL
 ```bash
 curl "http://localhost:4000/instance/status" \
+  -H "apikey: token-da-instancia-vendas"
+```
+
+---
+
+## Tipo da Conta Conectada
+
+Identifica se a instância conectada usa uma conta WhatsApp Business ou uma conta pessoal.
+
+### Endpoint
+```
+GET /instance/account-type
+```
+
+### Headers
+```
+apikey: TOKEN-DA-INSTANCIA
+```
+
+### Resposta Business (200)
+```json
+{
+  "message": "success",
+  "data": {
+    "jid": "5511999999999@s.whatsapp.net",
+    "accountType": "business",
+    "isBusiness": true,
+    "businessName": "Minha Empresa"
+  }
+}
+```
+
+### Resposta Pessoal (200)
+```json
+{
+  "message": "success",
+  "data": {
+    "jid": "5511999999999@s.whatsapp.net",
+    "accountType": "personal",
+    "isBusiness": false,
+    "businessName": ""
+  }
+}
+```
+
+Se a consulta ao WhatsApp falhar por timeout, desconexão transitória ou outro erro remoto, a API não presume que a conta seja pessoal. Nesse caso, retorna:
+
+```json
+{
+  "message": "success",
+  "data": {
+    "jid": "5511999999999@s.whatsapp.net",
+    "accountType": "unknown",
+    "isBusiness": null,
+    "businessName": ""
+  }
+}
+```
+
+Uma instância válida, mas desconectada ou sem login, produz erro HTTP `400`, pois não existe uma conta ativa que possa ser classificada. Token ausente, inválido ou sem instância correspondente produz `401 not authorized` no middleware de autenticação.
+
+### Exemplo cURL
+```bash
+curl "http://localhost:4000/instance/account-type" \
   -H "apikey: token-da-instancia-vendas"
 ```
 

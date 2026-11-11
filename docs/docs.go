@@ -1059,6 +1059,44 @@ const docTemplate = `{
                 }
             }
         },
+        "/instance/account-type": {
+            "get": {
+                "description": "Detect whether the connected WhatsApp account is business, personal, or unknown",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Instance"
+                ],
+                "summary": "Get connected account type",
+                "responses": {
+                    "200": {
+                        "description": "Connected account type",
+                        "schema": {
+                            "$ref": "#/definitions/instance_handler.AccountTypeResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Instance is not connected or logged in",
+                        "schema": {
+                            "$ref": "#/definitions/gin.H"
+                        }
+                    },
+                    "401": {
+                        "description": "Not authorized",
+                        "schema": {
+                            "$ref": "#/definitions/gin.H"
+                        }
+                    },
+                    "404": {
+                        "description": "Instance not found",
+                        "schema": {
+                            "$ref": "#/definitions/gin.H"
+                        }
+                    }
+                }
+            }
+        },
         "/instance/status": {
             "get": {
                 "description": "Get instance status",
@@ -2720,6 +2758,23 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_Zapbox-API_evolution-go_pkg_instance_service.AccountTypeStruct": {
+            "type": "object",
+            "properties": {
+                "accountType": {
+                    "type": "string"
+                },
+                "businessName": {
+                    "type": "string"
+                },
+                "isBusiness": {
+                    "type": "boolean"
+                },
+                "jid": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_Zapbox-API_evolution-go_pkg_instance_service.CreateStruct": {
             "type": "object",
             "properties": {
@@ -2761,6 +2816,17 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "instance_handler.AccountTypeResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/github_com_Zapbox-API_evolution-go_pkg_instance_service.AccountTypeStruct"
+                },
+                "message": {
                     "type": "string"
                 }
             }

@@ -94,6 +94,17 @@ definitions:
       token:
         type: string
     type: object
+  github_com_Zapbox-API_evolution-go_pkg_instance_service.AccountTypeStruct:
+    properties:
+      accountType:
+        type: string
+      businessName:
+        type: string
+      isBusiness:
+        type: boolean
+      jid:
+        type: string
+    type: object
   github_com_Zapbox-API_evolution-go_pkg_instance_service.PairStruct:
     properties:
       phone:
@@ -112,6 +123,13 @@ definitions:
       port:
         type: string
       username:
+        type: string
+    type: object
+  instance_handler.AccountTypeResponse:
+    properties:
+      data:
+        $ref: '#/definitions/github_com_Zapbox-API_evolution-go_pkg_instance_service.AccountTypeStruct'
+      message:
         type: string
     type: object
   github_com_Zapbox-API_evolution-go_pkg_label_service.ChatLabelStruct:
@@ -1134,6 +1152,32 @@ paths:
           schema:
             $ref: '#/definitions/gin.H'
       summary: Get instance QR code
+      tags:
+      - Instance
+  /instance/account-type:
+    get:
+      description: Detect whether the connected WhatsApp account is business, personal,
+        or unknown
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Connected account type
+          schema:
+            $ref: '#/definitions/instance_handler.AccountTypeResponse'
+        "400":
+          description: Instance is not connected or logged in
+          schema:
+            $ref: '#/definitions/gin.H'
+        "401":
+          description: Not authorized
+          schema:
+            $ref: '#/definitions/gin.H'
+        "404":
+          description: Instance not found
+          schema:
+            $ref: '#/definitions/gin.H'
+      summary: Get connected account type
       tags:
       - Instance
   /instance/status:

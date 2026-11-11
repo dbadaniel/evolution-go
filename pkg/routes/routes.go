@@ -98,6 +98,7 @@ func (r *Routes) AssignRoutes(eng *gin.Engine) {
 		{
 			routes.POST("/connect", r.instanceHandler.Connect)
 			routes.GET("/status", r.instanceHandler.Status)
+			routes.GET("/account-type", r.instanceHandler.AccountType)
 			routes.GET("/qr", r.instanceHandler.Qr)
 			routes.POST("/pair", r.jidValidationMiddleware.ValidateNumberField(), r.instanceHandler.Pair)
 			routes.POST("/disconnect", r.instanceHandler.Disconnect)
