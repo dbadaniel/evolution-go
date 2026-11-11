@@ -48,10 +48,10 @@ context: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `pkg/instance/service/instance_service.go` — adicionar DTO e serviço de detecção com timeout e classificação conservadora.
-- [ ] `pkg/instance/handler/instance_handler.go` e `pkg/routes/routes.go` — publicar `GET /instance/account-type` sob `Auth` e mapear respostas.
-- [ ] `pkg/instance/service/instance_service_test.go` — cobrir business por cache, business por perfil, personal por ausência específica e unknown por erro transitório.
-- [ ] `docs/wiki/guias-api/api-instances.md` — documentar autenticação, resposta e semântica de `unknown`.
+- [x] `pkg/instance/service/instance_service.go` — adicionar DTO e serviço de detecção com timeout e classificação conservadora.
+- [x] `pkg/instance/handler/instance_handler.go` e `pkg/routes/routes.go` — publicar `GET /instance/account-type` sob `Auth` e mapear respostas.
+- [x] `pkg/instance/service/instance_service_test.go` — cobrir business por cache, business por perfil, personal por ausência específica e unknown por erro transitório.
+- [x] `docs/wiki/guias-api/api-instances.md` — documentar autenticação, resposta e semântica de `unknown`.
 
 **Acceptance Criteria:**
 - Given uma instância autenticada e conectada, when `GET /instance/account-type` é chamado, then a resposta contém o JID próprio e exatamente um dos estados `business`, `personal` ou `unknown`.
@@ -60,6 +60,9 @@ context: []
 - Given token ausente ou inválido, when a rota é chamada, then o middleware existente retorna `401 not authorized`.
 
 ## Spec Change Log
+
+- 2026-11-11: adicionada ao README a documentação pública de uso do endpoint `/instance/account-type`.
+- 2026-11-11: revisão esclareceu disponibilidade em builds atuais, resposta HTTP 200 para `unknown` e possibilidade de `businessName` vazio.
 
 ## Verification
 

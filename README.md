@@ -51,6 +51,49 @@ Ambientes de produção reais sofrem com oscilações de rede, mudanças silenci
 
 ---
 
+## ✨ Novas implementações
+
+### Identificação do tipo da conta conectada
+
+O endpoint `GET /instance/account-type` classifica a conta conectada como WhatsApp Business, pessoal ou `unknown` quando a consulta é inconclusiva. Essa verificação permite antecipar limitações do WhatsApp, como restrições de contas Business para criação de comunidades.
+
+A rota faz parte do código atual deste fork. Para utilizá-la, execute uma imagem gerada a partir desta implementação ou de uma versão posterior.
+
+Use no cabeçalho `apikey` o **token da própria instância**. A `GLOBAL_API_KEY` não substitui esse token nesta rota.
+
+```bash
+curl -X GET "https://seu-dominio/instance/account-type" \
+  -H "apikey: TOKEN_DA_INSTANCIA"
+```
+
+Exemplo de resposta para uma conta Business:
+
+```json
+{
+  "message": "success",
+  "data": {
+    "jid": "5511999999999@s.whatsapp.net",
+    "accountType": "business",
+    "isBusiness": true,
+    "businessName": "Nome comercial"
+  }
+}
+```
+
+O campo `accountType` pode assumir os seguintes valores:
+
+| Valor | `isBusiness` | Significado |
+| ----- | ------------ | ----------- |
+| `business` | `true` | O perfil comercial da conta foi identificado. |
+| `personal` | `false` | A conta não possui perfil comercial. |
+| `unknown` | `null` | A consulta foi inconclusiva, por exemplo, devido a timeout ou falha temporária do WhatsApp. Não deve ser interpretado como conta pessoal. |
+
+O estado `unknown` é retornado com HTTP `200`, pois representa uma classificação temporariamente inconclusiva, e não uma confirmação de conta pessoal. O campo `businessName` também pode ser uma string vazia mesmo quando `accountType` for `business`.
+
+A instância precisa estar conectada e autenticada no WhatsApp. Token ausente ou inválido retorna `401`; uma sessão desconectada ou sem login retorna erro operacional `400`. Consulte também o [guia de instâncias](./docs/wiki/guias-api/api-instances.md) e o Swagger da instalação para o contrato completo.
+
+---
+
 ## 📦 Instalação e Quick Start
 
 ### 1. Usando a Imagem Oficial da Expertsa no Docker Hub (Recomendado)
@@ -182,6 +225,7 @@ http://localhost:8080/manager/login
 | `GET`    | `/instance/qr`         | Obtém o QR Code atual para pareamento                                                   |
 | `POST`   | `/instance/pair`       | Pareamento via código numérico / Passkey                                                |
 | `GET`    | `/instance/status`     | Consulta o status de conexão da instância                                               |
+| `GET`    | `/instance/account-type` | Classifica a conta como Business, pessoal ou retorna classificação inconclusiva         |
 | `POST`   | `/instance/disconnect` | Desconecta a sessão mantendo as chaves salvas                                           |
 | `DELETE` | `/instance/logout`     | Faz logout do aparelho e limpa a sessão                                                 |
 | `POST`   | `/send/text`           | Envia mensagem de texto (suporta menções, quote e `forwardingScore`)                    |
