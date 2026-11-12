@@ -2,7 +2,7 @@
 title: 'Entregar botões de resposta no WhatsApp móvel'
 type: 'bugfix'
 created: '2026-11-12'
-status: 'in-review'
+status: 'done'
 baseline_commit: '5ec7ec8048de9d9ec83e3ffb89b383b21cb596cb'
 context:
   - 'docs/fork-delta.md'
