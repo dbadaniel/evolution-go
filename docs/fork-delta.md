@@ -42,17 +42,18 @@ Ported from upstream `0.7.2`:
 - CTA, Pix, media-bearing reply buttons, and list messages retain their
   `DocumentWithCaptionMessage` wrapping with `MessageSecret` where upstream
   uses it. Text-only reply buttons are the exception described below.
-- Reply-only buttons without media use a native-flow `InteractiveMessage` with
-  `quick_reply` buttons inside a `ViewOnceMessage` future-proof envelope. The
-  inner message carries `MessageContextInfo`, `MessageSecret`,
-  `DeviceListMetadata`, and `DeviceListMetadataVersion=2`. The send includes the
+- Reply-only buttons without media use a top-level native-flow
+  `InteractiveMessage` with `quick_reply` buttons. Its top-level
+  `MessageContextInfo` carries `MessageSecret`, `DeviceListMetadata`, and
+  `DeviceListMetadataVersion=2`. The send includes the
   full official-client-style `biz` node (`actual_actors`, `host_storage`, Unix
   `privacy_mode_ts`, `native_flow v=9 name=mixed`, and `quality_control` with a
   cryptographically random decision ID), with no `bot` node. This follows the
   device-validated transport shape documented in `tulir/whatsmeow#1235`. The
-  earlier top-level variant rendered on a real mobile device but did not appear
-  in WhatsApp Web; the wrapped variant still requires a real mobile-and-Web
-  compatibility check before compatibility can be claimed.
+  `ViewOnceMessage` wrapper was removed after the wrapped variant displayed a
+  load error in WhatsApp for Windows. The top-level variant has now been
+  confirmed by manual test on both a mobile phone and WhatsApp for Windows,
+  using two text-only `reply` buttons.
 - Reply buttons with `imageUrl` or `videoUrl` remain on the legacy,
   media-capable `ButtonsMessage` inside `DocumentWithCaptionMessage`. This only
   preserves the previous path: it does not guarantee remote download/upload

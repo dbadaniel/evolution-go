@@ -2378,15 +2378,11 @@ func buildReplyButtonMessage(data *ButtonStruct, buttons []*waE2E.InteractiveMes
 	}
 
 	return &waE2E.Message{
-		ViewOnceMessage: &waE2E.FutureProofMessage{
-			Message: &waE2E.Message{
-				InteractiveMessage: interactiveMessage,
-				MessageContextInfo: &waE2E.MessageContextInfo{
-					MessageSecret:             msgSecret,
-					DeviceListMetadata:        &waE2E.DeviceListMetadata{},
-					DeviceListMetadataVersion: proto.Int32(2),
-				},
-			},
+		InteractiveMessage: interactiveMessage,
+		MessageContextInfo: &waE2E.MessageContextInfo{
+			MessageSecret:             msgSecret,
+			DeviceListMetadata:        &waE2E.DeviceListMetadata{},
+			DeviceListMetadataVersion: proto.Int32(2),
 		},
 	}
 }

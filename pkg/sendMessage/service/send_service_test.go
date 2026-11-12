@@ -109,7 +109,7 @@ func TestBuildCTAButtonMessageOmitsEmptyFooterAndExtraFields(t *testing.T) {
 	}
 }
 
-func TestBuildReplyButtonMessageUsesViewOnceNativeFlow(t *testing.T) {
+func TestBuildReplyButtonMessageUsesTopLevelNativeFlow(t *testing.T) {
 	data := &ButtonStruct{
 		Title:       "Confirmacao",
 		Description: "Escolha uma opcao",
@@ -128,22 +128,19 @@ func TestBuildReplyButtonMessageUsesViewOnceNativeFlow(t *testing.T) {
 	messageParamsJSON := `{"from":"api","templateId":123}`
 	msg := buildReplyButtonMessage(data, buttons, messageParamsJSON, secret)
 
-	if msg.GetViewOnceMessage() == nil || msg.GetViewOnceMessage().GetMessage() == nil {
-		t.Fatal("reply buttons must be wrapped in ViewOnceMessage")
+	if msg.GetViewOnceMessage() != nil || msg.GetViewOnceMessageV2() != nil {
+		t.Fatal("reply buttons must not use a ViewOnce envelope")
 	}
-	if msg.GetInteractiveMessage() != nil || msg.GetButtonsMessage() != nil || msg.GetDocumentWithCaptionMessage() != nil {
+	if msg.GetInteractiveMessage() == nil || msg.GetButtonsMessage() != nil || msg.GetDocumentWithCaptionMessage() != nil {
 		t.Fatal("modern reply buttons must not use ButtonsMessage or DocumentWithCaptionMessage")
 	}
-	innerMessage := msg.GetViewOnceMessage().GetMessage()
-	if innerMessage.GetViewOnceMessage() != nil || innerMessage.GetViewOnceMessageV2() != nil {
-		t.Fatal("reply buttons must use exactly one ViewOnceMessage envelope")
-	}
+	innerMessage := msg
 	if innerMessage.GetButtonsMessage() != nil || innerMessage.GetDocumentWithCaptionMessage() != nil {
-		t.Fatal("ViewOnceMessage must not contain a legacy reply envelope")
+		t.Fatal("reply message must not contain a legacy reply envelope")
 	}
 	interactive := innerMessage.GetInteractiveMessage()
 	if interactive == nil {
-		t.Fatal("ViewOnceMessage must contain InteractiveMessage")
+		t.Fatal("reply message must contain top-level InteractiveMessage")
 	}
 	if interactive.GetBody().GetText() != "*Confirmacao*\n\nEscolha uma opcao" {
 		t.Fatalf("unexpected reply body: %q", interactive.GetBody().GetText())
@@ -173,9 +170,6 @@ func TestBuildReplyButtonMessageUsesViewOnceNativeFlow(t *testing.T) {
 		if params["id"] != data.Buttons[i].Id || params["display_text"] != data.Buttons[i].DisplayText {
 			t.Fatalf("button %d params = %#v, want id/display text preserved", i, params)
 		}
-	}
-	if msg.GetMessageContextInfo() != nil {
-		t.Fatal("reply metadata must be stored on the inner message")
 	}
 	messageContextInfo := innerMessage.GetMessageContextInfo()
 	if !bytes.Equal(messageContextInfo.GetMessageSecret(), secret) {

@@ -39,7 +39,8 @@ Ambientes de produção reais sofrem com oscilações de rede, mudanças silenci
 - **`CONNECT_ON_STARTUP` inteligente:** Por padrão (`CONNECT_ON_STARTUP=true`), ao reiniciar o container todas as instâncias pareadas (`jid != ''`) que não foram desconectadas manualmente via API reconectam sozinhas sem necessidade de ler o QR Code novamente — respeitando integralmente `CONNECT_ON_STARTUP=false` caso você deseje desativar a reconexão no boot.
 
 ### 4. Mensagens Interativas Multiplataforma (Android, iOS e WhatsApp Web)
-- **Botões (`POST /send/button`), Listas (`POST /send/list`) e Pix:** Reconciliação cuidadosa dos nós de transporte (`biz`, `native_flow`, `product_list`) e `DocumentWithCaptionMessage` para máxima compatibilidade.
+- **Botões de resposta rápida (`POST /send/button`):** Replies textuais são enviados como `InteractiveMessage` no nível principal, sem envelope `ViewOnceMessage`; formato confirmado em celular e WhatsApp para Windows. Cada botão usa `type: "reply"`, `id` e `displayText`.
+- **Listas, CTA e Pix:** Reconciliação dos nós de transporte (`biz`, `native_flow`, `product_list`) e `DocumentWithCaptionMessage` conforme o tipo de mensagem.
 - **Correção do erro `473` em botões CTA (`url`, `call`, `copy`):** Payload enxuto sem nós `bot` incompatíveis com contas padrão vinculadas.
 - **Carrossel (`POST /send/carousel`):** Envio de cards ricos com imagens, textos, rodapés, botões interativos e geração automática de thumbnails JPEG para carregamento instantâneo.
 

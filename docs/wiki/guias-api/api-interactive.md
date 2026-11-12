@@ -53,8 +53,8 @@ apikey: SUA-CHAVE-API
 | `number` | string | ✅ Sim | Número do destinatário (formato: DDI + DDD + número) |
 | `description` | string | ✅ Sim | Texto do corpo da mensagem |
 | `buttons` | array | ✅ Sim | Array de botões (ver [Tipos de Botões](#tipos-de-botões)) |
-| `title` | string | ❌ Não | Título exibido em negrito acima do corpo |
-| `footer` | string | ❌ Não | Texto pequeno no rodapé. **Não enviar vazio** |
+| `title` | string | ✅ Sim | Título exibido em negrito acima do corpo |
+| `footer` | string | ✅ Sim | Texto pequeno no rodapé. **Não enviar vazio** |
 | `delay` | int32 | ❌ Não | Delay em milissegundos antes de enviar |
 | `mentionedJid` | string | ❌ Não | JID do usuário a mencionar |
 | `mentionAll` | bool | ❌ Não | Mencionar todos os participantes (apenas grupos) |
@@ -83,7 +83,7 @@ apikey: SUA-CHAVE-API
 }
 ```
 
-### Exemplo 1: Botões Quick Reply
+### Exemplo 1: Botões Quick Reply (testado em celular e Windows)
 
 Máximo 3 botões. Não pode misturar com outros tipos.
 
@@ -92,17 +92,18 @@ curl -X POST http://localhost:4000/send/button \
   -H "Content-Type: application/json" \
   -H "apikey: SUA-CHAVE-API" \
   -d '{
-    "number": "5511999999999",
-    "title": "Atendimento",
-    "description": "Como podemos ajudar você hoje?",
-    "footer": "Responda clicando em um botão",
+    "number": "5511982081887",
+    "title": "testado",
+    "description": "Você confirma esta opção?",
+    "footer": "Selecione uma resposta",
     "buttons": [
-      {"type": "reply", "displayText": "Suporte Técnico", "id": "suporte"},
-      {"type": "reply", "displayText": "Financeiro", "id": "financeiro"},
-      {"type": "reply", "displayText": "Vendas", "id": "vendas"}
+      {"type": "reply", "id": "sim", "displayText": "confirmado"},
+      {"type": "reply", "id": "nao", "displayText": "recusar serviço"}
     ]
   }'
 ```
+
+Cada botão `reply` usa `id` como identificador da resposta e `displayText` como rótulo visível. No payload validado, o `id` fica dentro de cada botão e não há `id` no objeto principal. A mensagem é montada como um `InteractiveMessage` no nível principal, formato confirmado no celular e no WhatsApp para Windows.
 
 ### Exemplo 2: Botões Mistos (URL + Call + Copy)
 
