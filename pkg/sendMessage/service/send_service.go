@@ -2378,10 +2378,15 @@ func buildReplyButtonMessage(data *ButtonStruct, buttons []*waE2E.InteractiveMes
 	}
 
 	return &waE2E.Message{
-		InteractiveMessage: interactiveMessage,
-		MessageContextInfo: &waE2E.MessageContextInfo{
-			MessageSecret:      msgSecret,
-			DeviceListMetadata: &waE2E.DeviceListMetadata{},
+		ViewOnceMessage: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{
+				InteractiveMessage: interactiveMessage,
+				MessageContextInfo: &waE2E.MessageContextInfo{
+					MessageSecret:             msgSecret,
+					DeviceListMetadata:        &waE2E.DeviceListMetadata{},
+					DeviceListMetadataVersion: proto.Int32(2),
+				},
+			},
 		},
 	}
 }
@@ -2432,6 +2437,7 @@ func usesModernReplyButtons(data *ButtonStruct, hasReply, hasOtherTypes, hasPix 
 }
 
 func ensureInteractiveMessageContextInfo(msg *waE2E.Message) *waE2E.ContextInfo {
+	msg = unwrapViewOnceMessage(msg)
 	if msg == nil {
 		return nil
 	}
@@ -2449,11 +2455,44 @@ func ensureInteractiveMessageContextInfo(msg *waE2E.Message) *waE2E.ContextInfo 
 	return interactiveMessage.ContextInfo
 }
 
+const maxViewOnceMessageDepth = 16
+
+func unwrapViewOnceMessage(msg *waE2E.Message) *waE2E.Message {
+	visited := make(map[*waE2E.Message]struct{}, maxViewOnceMessageDepth+1)
+	for depth := 0; msg != nil; depth++ {
+		if _, exists := visited[msg]; exists {
+			return nil
+		}
+		visited[msg] = struct{}{}
+
+		var next *waE2E.Message
+		switch {
+		case msg.ViewOnceMessage != nil && msg.ViewOnceMessage.Message != nil:
+			next = msg.ViewOnceMessage.Message
+		case msg.ViewOnceMessageV2 != nil && msg.ViewOnceMessageV2.Message != nil:
+			next = msg.ViewOnceMessageV2.Message
+		default:
+			return msg
+		}
+		if depth == maxViewOnceMessageDepth {
+			return nil
+		}
+		msg = next
+	}
+	return nil
+}
+
 func applyInteractiveQuotedMessage(msg *waE2E.Message, quoted QuotedStruct) {
 	if contextInfo := ensureInteractiveMessageContextInfo(msg); contextInfo != nil {
 		contextInfo.StanzaID = proto.String(quoted.MessageID)
 		contextInfo.Participant = proto.String(quoted.Participant)
 		contextInfo.QuotedMessage = &waE2E.Message{Conversation: proto.String("")}
+	}
+}
+
+func applyInteractiveMentions(msg *waE2E.Message, mentionedJIDs []string) {
+	if contextInfo := ensureInteractiveMessageContextInfo(msg); contextInfo != nil {
+		contextInfo.MentionedJID = mentionedJIDs
 	}
 }
 
@@ -2994,13 +3033,8 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 		}
 	}
 
-	// Unwrap message if it's wrapped in ViewOnceMessage for quoting logic
-	m := msg
-	if m.ViewOnceMessage != nil && m.ViewOnceMessage.Message != nil {
-		m = m.ViewOnceMessage.Message
-	} else if m.ViewOnceMessageV2 != nil && m.ViewOnceMessageV2.Message != nil {
-		m = m.ViewOnceMessageV2.Message
-	}
+	// Unwrap future-proof envelopes for type-specific context handling.
+	m := unwrapViewOnceMessage(msg)
 
 	isMedia := false
 
@@ -3082,7 +3116,7 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 				QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 			}
 		case "InteractiveMessage":
-			applyInteractiveQuotedMessage(m, data.Quoted)
+			applyInteractiveQuotedMessage(msg, data.Quoted)
 		case "ListMessage":
 			if m.ListMessage != nil {
 				m.ListMessage.ContextInfo = &waE2E.ContextInfo{
@@ -3220,9 +3254,9 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 				msg.ContactMessage.ContextInfo.IsForwarded = proto.Bool(true)
 			}
 		case "InteractiveMessage":
-			if msg.InteractiveMessage != nil && msg.InteractiveMessage.ContextInfo != nil {
-				msg.InteractiveMessage.ContextInfo.ForwardingScore = data.ForwardingScore
-				msg.InteractiveMessage.ContextInfo.IsForwarded = proto.Bool(true)
+			if contextInfo := ensureInteractiveMessageContextInfo(msg); contextInfo != nil {
+				contextInfo.ForwardingScore = data.ForwardingScore
+				contextInfo.IsForwarded = proto.Bool(true)
 			}
 		case "ListMessage":
 			if msg.ListMessage != nil && msg.ListMessage.ContextInfo != nil {
@@ -3300,9 +3334,7 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 				}
 				msg.ContactMessage.ContextInfo.MentionedJID = mentionedJIDs
 			case "InteractiveMessage":
-				if contextInfo := ensureInteractiveMessageContextInfo(m); contextInfo != nil {
-					contextInfo.MentionedJID = mentionedJIDs
-				}
+				applyInteractiveMentions(msg, mentionedJIDs)
 			}
 
 		}
@@ -3360,9 +3392,7 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 				}
 				msg.ContactMessage.ContextInfo.MentionedJID = data.MentionedJID
 			case "InteractiveMessage":
-				if contextInfo := ensureInteractiveMessageContextInfo(m); contextInfo != nil {
-					contextInfo.MentionedJID = data.MentionedJID
-				}
+				applyInteractiveMentions(msg, data.MentionedJID)
 			}
 		}
 	}

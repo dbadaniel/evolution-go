@@ -109,7 +109,7 @@ func TestBuildCTAButtonMessageOmitsEmptyFooterAndExtraFields(t *testing.T) {
 	}
 }
 
-func TestBuildReplyButtonMessageUsesTopLevelNativeFlow(t *testing.T) {
+func TestBuildReplyButtonMessageUsesViewOnceNativeFlow(t *testing.T) {
 	data := &ButtonStruct{
 		Title:       "Confirmacao",
 		Description: "Escolha uma opcao",
@@ -128,13 +128,23 @@ func TestBuildReplyButtonMessageUsesTopLevelNativeFlow(t *testing.T) {
 	messageParamsJSON := `{"from":"api","templateId":123}`
 	msg := buildReplyButtonMessage(data, buttons, messageParamsJSON, secret)
 
-	if msg.GetInteractiveMessage() == nil {
-		t.Fatal("reply buttons must use a top-level InteractiveMessage")
+	if msg.GetViewOnceMessage() == nil || msg.GetViewOnceMessage().GetMessage() == nil {
+		t.Fatal("reply buttons must be wrapped in ViewOnceMessage")
 	}
-	if msg.GetButtonsMessage() != nil || msg.GetDocumentWithCaptionMessage() != nil {
+	if msg.GetInteractiveMessage() != nil || msg.GetButtonsMessage() != nil || msg.GetDocumentWithCaptionMessage() != nil {
 		t.Fatal("modern reply buttons must not use ButtonsMessage or DocumentWithCaptionMessage")
 	}
-	interactive := msg.GetInteractiveMessage()
+	innerMessage := msg.GetViewOnceMessage().GetMessage()
+	if innerMessage.GetViewOnceMessage() != nil || innerMessage.GetViewOnceMessageV2() != nil {
+		t.Fatal("reply buttons must use exactly one ViewOnceMessage envelope")
+	}
+	if innerMessage.GetButtonsMessage() != nil || innerMessage.GetDocumentWithCaptionMessage() != nil {
+		t.Fatal("ViewOnceMessage must not contain a legacy reply envelope")
+	}
+	interactive := innerMessage.GetInteractiveMessage()
+	if interactive == nil {
+		t.Fatal("ViewOnceMessage must contain InteractiveMessage")
+	}
 	if interactive.GetBody().GetText() != "*Confirmacao*\n\nEscolha uma opcao" {
 		t.Fatalf("unexpected reply body: %q", interactive.GetBody().GetText())
 	}
@@ -164,11 +174,18 @@ func TestBuildReplyButtonMessageUsesTopLevelNativeFlow(t *testing.T) {
 			t.Fatalf("button %d params = %#v, want id/display text preserved", i, params)
 		}
 	}
-	if !bytes.Equal(msg.GetMessageContextInfo().GetMessageSecret(), secret) {
+	if msg.GetMessageContextInfo() != nil {
+		t.Fatal("reply metadata must be stored on the inner message")
+	}
+	messageContextInfo := innerMessage.GetMessageContextInfo()
+	if !bytes.Equal(messageContextInfo.GetMessageSecret(), secret) {
 		t.Fatal("reply payload must preserve MessageSecret")
 	}
-	if msg.GetMessageContextInfo().GetDeviceListMetadata() == nil {
+	if messageContextInfo.GetDeviceListMetadata() == nil {
 		t.Fatal("reply payload must include device list metadata")
+	}
+	if messageContextInfo.GetDeviceListMetadataVersion() != 2 {
+		t.Fatalf("device list metadata version = %d, want 2", messageContextInfo.GetDeviceListMetadataVersion())
 	}
 
 	quoted := QuotedStruct{MessageID: "quoted-message-id", Participant: "5511999999999@s.whatsapp.net"}
@@ -177,8 +194,60 @@ func TestBuildReplyButtonMessageUsesTopLevelNativeFlow(t *testing.T) {
 	if contextInfo.GetStanzaID() != quoted.MessageID || contextInfo.GetParticipant() != quoted.Participant || contextInfo.GetQuotedMessage() == nil {
 		t.Fatalf("quoted context not preserved: %#v", contextInfo)
 	}
-	if !bytes.Equal(msg.GetMessageContextInfo().GetMessageSecret(), secret) {
+	if !bytes.Equal(innerMessage.GetMessageContextInfo().GetMessageSecret(), secret) {
 		t.Fatal("applying quoted context must not replace MessageSecret")
+	}
+
+	mentionedJIDs := []string{"5511888888888@s.whatsapp.net", "5511777777777@s.whatsapp.net"}
+	applyInteractiveMentions(msg, mentionedJIDs)
+	if got := interactive.GetContextInfo().GetMentionedJID(); len(got) != len(mentionedJIDs) || got[0] != mentionedJIDs[0] || got[1] != mentionedJIDs[1] {
+		t.Fatalf("mentions not preserved on inner interactive message: %#v", got)
+	}
+	if interactive.GetContextInfo().GetStanzaID() != quoted.MessageID || interactive.GetContextInfo().GetParticipant() != quoted.Participant || interactive.GetContextInfo().GetQuotedMessage() == nil {
+		t.Fatal("applying mentions must preserve quoted context")
+	}
+	if !bytes.Equal(innerMessage.GetMessageContextInfo().GetMessageSecret(), secret) || innerMessage.GetMessageContextInfo().GetDeviceListMetadataVersion() != 2 {
+		t.Fatal("applying mentions must not replace inner message metadata")
+	}
+}
+
+func TestUnwrapViewOnceMessageSupportsNestedVersions(t *testing.T) {
+	inner := &waE2E.Message{InteractiveMessage: &waE2E.InteractiveMessage{}}
+	wrapped := &waE2E.Message{
+		ViewOnceMessage: &waE2E.FutureProofMessage{Message: &waE2E.Message{
+			ViewOnceMessageV2: &waE2E.FutureProofMessage{Message: inner},
+		}},
+	}
+
+	if got := unwrapViewOnceMessage(wrapped); got != inner {
+		t.Fatalf("unwrapViewOnceMessage() = %p, want %p", got, inner)
+	}
+}
+
+func TestUnwrapViewOnceMessageRejectsCycles(t *testing.T) {
+	first := &waE2E.Message{}
+	second := &waE2E.Message{}
+	first.ViewOnceMessage = &waE2E.FutureProofMessage{Message: second}
+	second.ViewOnceMessageV2 = &waE2E.FutureProofMessage{Message: first}
+
+	if got := unwrapViewOnceMessage(first); got != nil {
+		t.Fatalf("unwrapViewOnceMessage() = %p, want nil for cycle", got)
+	}
+}
+
+func TestUnwrapViewOnceMessageEnforcesDepthBound(t *testing.T) {
+	inner := &waE2E.Message{InteractiveMessage: &waE2E.InteractiveMessage{}}
+	withinBound := inner
+	for range maxViewOnceMessageDepth {
+		withinBound = &waE2E.Message{ViewOnceMessage: &waE2E.FutureProofMessage{Message: withinBound}}
+	}
+	if got := unwrapViewOnceMessage(withinBound); got != inner {
+		t.Fatalf("unwrapViewOnceMessage() = %p, want %p at depth bound", got, inner)
+	}
+
+	beyondBound := &waE2E.Message{ViewOnceMessageV2: &waE2E.FutureProofMessage{Message: withinBound}}
+	if got := unwrapViewOnceMessage(beyondBound); got != nil {
+		t.Fatalf("unwrapViewOnceMessage() = %p, want nil beyond depth bound", got)
 	}
 }
 
