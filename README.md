@@ -48,6 +48,7 @@ Ambientes de produção reais sofrem com oscilações de rede, mudanças silenci
 ### 5. Pareamento com Passkey (WebAuthn), Mídia Avançada e Regra de 9º Dígito BR
 - **Suporte a Passkey (WebAuthn):** Compatível com contas que o servidor do WhatsApp protege com cerimônia de Passkey durante a vinculação de dispositivo.
 - **Thumbnails de PDF e Mídia em Base64:** Documentos PDF enviados em `/send/media` ganham miniatura automática da primeira página via `pdftoppm` (`poppler-utils` incluso na imagem), e o campo `url` também aceita conteúdo em Base64.
+- **Dimensões de imagens (`POST /send/media`):** Envios por URL, Base64 e upload incluem a largura e altura originais em `ImageMessage`, permitindo que o WhatsApp reserve a proporção correta antes do download completo. A thumbnail continua independente dessas dimensões.
 - **Publicação de Status e Fixação de Mensagens:** Endpoints para publicar Status de texto/mídia (`/send/status/text`, `/send/status/media`) e fixar/desafixar mensagens (`/message/pin`, `/message/unpin`).
 - **Números móveis brasileiros:** Preservação correta do 9º dígito em celulares do Brasil e deduplicação de recibos de leitura/entrega por participante em grupos.
 

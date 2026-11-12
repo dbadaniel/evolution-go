@@ -1057,6 +1057,22 @@ func isUsablePreviewImageURL(imageURL string) bool {
 	return true
 }
 
+// populateImageDimensions uses the original media header, not the thumbnail,
+// so clients can lay out the image before downloading its full contents.
+// Unknown or malformed data keeps the existing send behavior and omits metadata.
+func populateImageDimensions(message *waE2E.ImageMessage, data []byte) {
+	if message == nil {
+		return
+	}
+	config, _, err := image.DecodeConfig(bytes.NewReader(data))
+	const maxDimension = 1<<32 - 1
+	if err != nil || config.Width <= 0 || config.Height <= 0 || uint64(config.Width) > maxDimension || uint64(config.Height) > maxDimension {
+		return
+	}
+	message.Width = proto.Uint32(uint32(config.Width))
+	message.Height = proto.Uint32(uint32(config.Height))
+}
+
 func (s *sendService) resizeThumbnail(data []byte, maxDim int) []byte {
 	if len(data) == 0 {
 		return nil
@@ -1635,6 +1651,7 @@ func (s *sendService) sendMediaFileWithRetry(data *MediaStruct, fileData []byte,
 					JPEGThumbnail: thumbnail,
 				}}
 			}
+			populateImageDimensions(media.ImageMessage, fileData)
 			mediaType = "ImageMessage"
 		case "video":
 			if isNewsletter {
@@ -1933,6 +1950,7 @@ func (s *sendService) sendMediaUrlWithRetry(data *MediaStruct, instance *instanc
 					JPEGThumbnail: thumbnail,
 				}}
 			}
+			populateImageDimensions(media.ImageMessage, fileData)
 			mediaType = "ImageMessage"
 		case "video":
 			if isNewsletter {
