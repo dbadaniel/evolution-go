@@ -5,6 +5,7 @@ import (
 	"context"
 	cryptoRand "crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2333,6 +2334,129 @@ func buildCTAButtonMessage(data *ButtonStruct, buttons []*waE2E.InteractiveMessa
 	}
 }
 
+func buildQuickReplyButtons(buttons []Button) ([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, error) {
+	quickReplies := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(buttons))
+	for _, button := range buttons {
+		params, err := json.Marshal(map[string]string{
+			"display_text": button.DisplayText,
+			"id":           button.Id,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		quickReplies = append(quickReplies, &waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+			Name:             proto.String("quick_reply"),
+			ButtonParamsJSON: proto.String(string(params)),
+		})
+	}
+	return quickReplies, nil
+}
+
+func buildReplyButtonMessage(data *ButtonStruct, buttons []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, messageParamsJSON string, msgSecret []byte) *waE2E.Message {
+	body := data.Description
+	if data.Title != "" && data.Title != data.Description {
+		if body == "" {
+			body = data.Title
+		} else {
+			body = "*" + data.Title + "*\n\n" + body
+		}
+	}
+
+	interactiveMessage := &waE2E.InteractiveMessage{
+		Body: &waE2E.InteractiveMessage_Body{Text: proto.String(body)},
+		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+				Buttons:           buttons,
+				MessageParamsJSON: proto.String(messageParamsJSON),
+				MessageVersion:    proto.Int32(1),
+			},
+		},
+	}
+	if data.Footer != "" {
+		interactiveMessage.Footer = &waE2E.InteractiveMessage_Footer{Text: proto.String(data.Footer)}
+	}
+
+	return &waE2E.Message{
+		InteractiveMessage: interactiveMessage,
+		MessageContextInfo: &waE2E.MessageContextInfo{
+			MessageSecret:      msgSecret,
+			DeviceListMetadata: &waE2E.DeviceListMetadata{},
+		},
+	}
+}
+
+func buildReplyButtonAdditionalNodes(timestamp time.Time, decisionID []byte) *[]waBinary.Node {
+	nodes := []waBinary.Node{{
+		Tag: "biz",
+		Attrs: waBinary.Attrs{
+			"actual_actors":   "2",
+			"host_storage":    "2",
+			"privacy_mode_ts": strconv.FormatInt(timestamp.Unix(), 10),
+		},
+		Content: []waBinary.Node{
+			{
+				Tag:   "interactive",
+				Attrs: waBinary.Attrs{"type": "native_flow", "v": "1"},
+				Content: []waBinary.Node{{
+					Tag:   "native_flow",
+					Attrs: waBinary.Attrs{"v": "9", "name": "mixed"},
+				}},
+			},
+			{
+				Tag: "quality_control",
+				Attrs: waBinary.Attrs{
+					"decision_id": hex.EncodeToString(decisionID),
+					"source_type": "third_party",
+				},
+				Content: []waBinary.Node{{
+					Tag:   "decision_source",
+					Attrs: waBinary.Attrs{"value": "df"},
+				}},
+			},
+		},
+	}}
+	return &nodes
+}
+
+func newReplyButtonAdditionalNodes() (*[]waBinary.Node, error) {
+	decisionID := make([]byte, 20)
+	if _, err := io.ReadFull(cryptoRand.Reader, decisionID); err != nil {
+		return nil, fmt.Errorf("failed to generate reply button decision ID: %w", err)
+	}
+	return buildReplyButtonAdditionalNodes(time.Now(), decisionID), nil
+}
+
+func usesModernReplyButtons(data *ButtonStruct, hasReply, hasOtherTypes, hasPix bool) bool {
+	return hasReply && !hasOtherTypes && !hasPix && data.ImageUrl == "" && data.VideoUrl == ""
+}
+
+func ensureInteractiveMessageContextInfo(msg *waE2E.Message) *waE2E.ContextInfo {
+	if msg == nil {
+		return nil
+	}
+
+	interactiveMessage := msg.InteractiveMessage
+	if interactiveMessage == nil && msg.DocumentWithCaptionMessage != nil && msg.DocumentWithCaptionMessage.Message != nil {
+		interactiveMessage = msg.DocumentWithCaptionMessage.Message.InteractiveMessage
+	}
+	if interactiveMessage == nil {
+		return nil
+	}
+	if interactiveMessage.ContextInfo == nil {
+		interactiveMessage.ContextInfo = &waE2E.ContextInfo{}
+	}
+	return interactiveMessage.ContextInfo
+}
+
+func applyInteractiveQuotedMessage(msg *waE2E.Message, quoted QuotedStruct) {
+	if contextInfo := ensureInteractiveMessageContextInfo(msg); contextInfo != nil {
+		contextInfo.StanzaID = proto.String(quoted.MessageID)
+		contextInfo.Participant = proto.String(quoted.Participant)
+		contextInfo.QuotedMessage = &waE2E.Message{Conversation: proto.String("")}
+	}
+}
+
 func buildButtonAdditionalNodes(hasPix, hasCTA bool, number string) *[]waBinary.Node {
 	nativeFlowName := "mixed"
 	if hasPix {
@@ -2405,9 +2529,14 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 		}
 	}
 
+	useModernReply := usesModernReplyButtons(data, hasReply, hasOtherTypes, hasPix)
 	buttons := []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{}
 
 	for _, v := range data.Buttons {
+		if useModernReply {
+			continue
+		}
+
 		var (
 			name       string
 			paramsData map[string]interface{}
@@ -2497,6 +2626,12 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 			ButtonParamsJSON: &paramsJSON,
 		})
 	}
+	if useModernReply {
+		buttons, err = buildQuickReplyButtons(data.Buttons)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	templateId := strconv.FormatInt(time.Now().UnixNano()/1000000, 10)
 	messageParamsJSON := `{"from":"api","templateId":` + templateId + `}`
@@ -2506,7 +2641,9 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 	var msg *waE2E.Message
 	msgType := "InteractiveMessage"
 
-	if hasPix {
+	if useModernReply {
+		msg = buildReplyButtonMessage(data, buttons, messageParamsJSON, msgSecret)
+	} else if hasPix {
 		paymentMsgParams := `{"native_flow_name":"order_details","version":1}`
 		var interactiveBody *waE2E.InteractiveMessage_Body
 		if data.Title != "" {
@@ -2613,7 +2750,12 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 	}
 
 	var additionalNodes *[]waBinary.Node
-	if !hasReply || hasOtherTypes || hasPix {
+	if useModernReply {
+		additionalNodes, err = newReplyButtonAdditionalNodes()
+		if err != nil {
+			return nil, err
+		}
+	} else if !hasReply || hasOtherTypes || hasPix {
 		additionalNodes = buildButtonAdditionalNodes(hasPix, hasOtherTypes, data.Number)
 	}
 
@@ -2940,21 +3082,7 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 				QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 			}
 		case "InteractiveMessage":
-			if m.InteractiveMessage != nil {
-				m.InteractiveMessage.ContextInfo = &waE2E.ContextInfo{
-					StanzaID:      proto.String(data.Quoted.MessageID),
-					Participant:   proto.String(data.Quoted.Participant),
-					QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
-				}
-			} else if msg.DocumentWithCaptionMessage != nil &&
-				msg.DocumentWithCaptionMessage.Message != nil &&
-				msg.DocumentWithCaptionMessage.Message.InteractiveMessage != nil {
-				msg.DocumentWithCaptionMessage.Message.InteractiveMessage.ContextInfo = &waE2E.ContextInfo{
-					StanzaID:      proto.String(data.Quoted.MessageID),
-					Participant:   proto.String(data.Quoted.Participant),
-					QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
-				}
-			}
+			applyInteractiveQuotedMessage(m, data.Quoted)
 		case "ListMessage":
 			if m.ListMessage != nil {
 				m.ListMessage.ContextInfo = &waE2E.ContextInfo{
@@ -3171,6 +3299,10 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 					msg.ContactMessage.ContextInfo = &waE2E.ContextInfo{}
 				}
 				msg.ContactMessage.ContextInfo.MentionedJID = mentionedJIDs
+			case "InteractiveMessage":
+				if contextInfo := ensureInteractiveMessageContextInfo(m); contextInfo != nil {
+					contextInfo.MentionedJID = mentionedJIDs
+				}
 			}
 
 		}
@@ -3227,6 +3359,10 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 					msg.ContactMessage.ContextInfo = &waE2E.ContextInfo{}
 				}
 				msg.ContactMessage.ContextInfo.MentionedJID = data.MentionedJID
+			case "InteractiveMessage":
+				if contextInfo := ensureInteractiveMessageContextInfo(m); contextInfo != nil {
+					contextInfo.MentionedJID = data.MentionedJID
+				}
 			}
 		}
 	}

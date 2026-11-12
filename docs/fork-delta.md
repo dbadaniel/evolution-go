@@ -39,14 +39,19 @@ Ported from upstream `0.7.2`:
 
 - `SendMessage` can pass `AdditionalNodes` to whatsmeow send options.
 - Button/list interactive sends now add Meta-compatible business/bot nodes.
-- CTA, Pix, reply buttons, and list messages are wrapped through
-  `DocumentWithCaptionMessage` with `MessageSecret` where upstream does so.
-- Reply-only buttons use `ButtonsMessage` instead of forcing all replies through
-  native-flow `InteractiveMessage`.
-- Reply-only buttons intentionally omit `AdditionalNodes`: real WhatsApp testing
-  showed both `native_flow` and `buttons` biz nodes return `405` with the current
-  stack. The message is now accepted as `ButtonsMessage`, but visual rendering
-  remains a pre-existing button-rendering issue to investigate separately.
+- CTA, Pix, media-bearing reply buttons, and list messages retain their
+  `DocumentWithCaptionMessage` wrapping with `MessageSecret` where upstream
+  uses it. Text-only reply buttons are the exception described below.
+- Reply-only buttons without media use a top-level native-flow
+  `InteractiveMessage` with `quick_reply` buttons. The send includes the full
+  official-client-style `biz` node (`actual_actors`, `host_storage`, Unix
+  `privacy_mode_ts`, `native_flow v=9 name=mixed`, and `quality_control` with a
+  cryptographically random decision ID), with no `bot` node. This follows the
+  device-validated transport shape documented in `tulir/whatsmeow#1235`.
+- Reply buttons with `imageUrl` or `videoUrl` remain on the legacy,
+  media-capable `ButtonsMessage` inside `DocumentWithCaptionMessage`. This only
+  preserves the previous path: it does not guarantee remote download/upload
+  success or mobile rendering for media replies.
 - Copy buttons now keep Expertsa input compatibility but use safer fallbacks for
   `id` and `copy_code`.
 - Quoted-message support recognizes nested interactive/list/buttons payloads
@@ -128,7 +133,8 @@ Ported selectively from `NathanAshford/evolution-go-custom` for CTA error 473:
   the protobuf payload. CTA transport now keeps `biz/native_flow/mixed` but omits
   `bot biz_bot=1`, avoiding a bot capability that the linked account may not
   have. Pix keeps its existing `biz/payment_info` and `bot` nodes.
-- Pix and reply button composition remain unchanged.
+- Pix composition remains unchanged. Text-only reply buttons use the newer
+  top-level native-flow path described above; media replies remain legacy.
 
 ## Sensitive Files
 

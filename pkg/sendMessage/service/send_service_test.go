@@ -2,11 +2,13 @@ package send_service
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"image"
 	"image/png"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +106,201 @@ func TestBuildCTAButtonMessageOmitsEmptyFooterAndExtraFields(t *testing.T) {
 	}
 	if interactive.GetHeader() != nil || interactive.GetContextInfo() != nil {
 		t.Fatal("lean CTA payload must omit header and internal context info")
+	}
+}
+
+func TestBuildReplyButtonMessageUsesTopLevelNativeFlow(t *testing.T) {
+	data := &ButtonStruct{
+		Title:       "Confirmacao",
+		Description: "Escolha uma opcao",
+		Footer:      "Responda abaixo",
+		Buttons: []Button{
+			{Type: "reply", Id: `yes-"quoted"`, DisplayText: `Sim "agora"`},
+			{Type: "reply", Id: `no\\later`, DisplayText: `Nao \\ depois`},
+		},
+	}
+	buttons, err := buildQuickReplyButtons(data.Buttons)
+	if err != nil {
+		t.Fatalf("build quick replies: %v", err)
+	}
+
+	secret := bytes.Repeat([]byte{0x7a}, 32)
+	messageParamsJSON := `{"from":"api","templateId":123}`
+	msg := buildReplyButtonMessage(data, buttons, messageParamsJSON, secret)
+
+	if msg.GetInteractiveMessage() == nil {
+		t.Fatal("reply buttons must use a top-level InteractiveMessage")
+	}
+	if msg.GetButtonsMessage() != nil || msg.GetDocumentWithCaptionMessage() != nil {
+		t.Fatal("modern reply buttons must not use ButtonsMessage or DocumentWithCaptionMessage")
+	}
+	interactive := msg.GetInteractiveMessage()
+	if interactive.GetBody().GetText() != "*Confirmacao*\n\nEscolha uma opcao" {
+		t.Fatalf("unexpected reply body: %q", interactive.GetBody().GetText())
+	}
+	if interactive.GetFooter().GetText() != data.Footer {
+		t.Fatalf("unexpected reply footer: %q", interactive.GetFooter().GetText())
+	}
+
+	nativeFlow := interactive.GetNativeFlowMessage()
+	if nativeFlow == nil || nativeFlow.GetMessageVersion() != 1 {
+		t.Fatal("reply payload must contain NativeFlowMessage version 1")
+	}
+	if nativeFlow.GetMessageParamsJSON() != messageParamsJSON {
+		t.Fatalf("unexpected message params: %q", nativeFlow.GetMessageParamsJSON())
+	}
+	if len(nativeFlow.GetButtons()) != len(data.Buttons) {
+		t.Fatalf("unexpected button count: %d", len(nativeFlow.GetButtons()))
+	}
+	for i, button := range nativeFlow.GetButtons() {
+		if button.GetName() != "quick_reply" {
+			t.Fatalf("button %d name = %q, want quick_reply", i, button.GetName())
+		}
+		var params map[string]string
+		if err := json.Unmarshal([]byte(button.GetButtonParamsJSON()), &params); err != nil {
+			t.Fatalf("button %d params are invalid JSON: %v", i, err)
+		}
+		if params["id"] != data.Buttons[i].Id || params["display_text"] != data.Buttons[i].DisplayText {
+			t.Fatalf("button %d params = %#v, want id/display text preserved", i, params)
+		}
+	}
+	if !bytes.Equal(msg.GetMessageContextInfo().GetMessageSecret(), secret) {
+		t.Fatal("reply payload must preserve MessageSecret")
+	}
+	if msg.GetMessageContextInfo().GetDeviceListMetadata() == nil {
+		t.Fatal("reply payload must include device list metadata")
+	}
+
+	quoted := QuotedStruct{MessageID: "quoted-message-id", Participant: "5511999999999@s.whatsapp.net"}
+	applyInteractiveQuotedMessage(msg, quoted)
+	contextInfo := interactive.GetContextInfo()
+	if contextInfo.GetStanzaID() != quoted.MessageID || contextInfo.GetParticipant() != quoted.Participant || contextInfo.GetQuotedMessage() == nil {
+		t.Fatalf("quoted context not preserved: %#v", contextInfo)
+	}
+	if !bytes.Equal(msg.GetMessageContextInfo().GetMessageSecret(), secret) {
+		t.Fatal("applying quoted context must not replace MessageSecret")
+	}
+}
+
+func TestBuildReplyButtonAdditionalNodesUsesOfficialClientShape(t *testing.T) {
+	timestamp := time.Unix(1_799_000_123, 0)
+	decisionID := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13}
+	nodes := *buildReplyButtonAdditionalNodes(timestamp, decisionID)
+
+	if len(nodes) != 1 || nodes[0].Tag != "biz" {
+		t.Fatalf("nodes = %#v, want one biz node", nodes)
+	}
+	biz := nodes[0]
+	if biz.Attrs["actual_actors"] != "2" || biz.Attrs["host_storage"] != "2" || biz.Attrs["privacy_mode_ts"] != "1799000123" {
+		t.Fatalf("unexpected biz attrs: %#v", biz.Attrs)
+	}
+	children, ok := biz.Content.([]waBinary.Node)
+	if !ok || len(children) != 2 {
+		t.Fatalf("biz content = %#v, want interactive and quality_control", biz.Content)
+	}
+	interactive := children[0]
+	if interactive.Tag != "interactive" || interactive.Attrs["type"] != "native_flow" || interactive.Attrs["v"] != "1" {
+		t.Fatalf("unexpected interactive node: %#v", interactive)
+	}
+	nativeFlow, ok := interactive.Content.([]waBinary.Node)
+	if !ok || len(nativeFlow) != 1 || nativeFlow[0].Tag != "native_flow" || nativeFlow[0].Attrs["v"] != "9" || nativeFlow[0].Attrs["name"] != "mixed" {
+		t.Fatalf("unexpected native flow node: %#v", interactive.Content)
+	}
+	qualityControl := children[1]
+	if qualityControl.Tag != "quality_control" || qualityControl.Attrs["source_type"] != "third_party" {
+		t.Fatalf("unexpected quality control node: %#v", qualityControl)
+	}
+	encodedDecisionID, ok := qualityControl.Attrs["decision_id"].(string)
+	if !ok || len(encodedDecisionID) != 40 {
+		t.Fatalf("decision_id = %#v, want 40 hexadecimal characters", qualityControl.Attrs["decision_id"])
+	}
+	decodedDecisionID, err := hex.DecodeString(encodedDecisionID)
+	if err != nil || !bytes.Equal(decodedDecisionID, decisionID) {
+		t.Fatalf("decision_id = %q, decode error = %v", encodedDecisionID, err)
+	}
+	decisionSource, ok := qualityControl.Content.([]waBinary.Node)
+	if !ok || len(decisionSource) != 1 || decisionSource[0].Tag != "decision_source" || decisionSource[0].Attrs["value"] != "df" {
+		t.Fatalf("unexpected decision source: %#v", qualityControl.Content)
+	}
+	for _, node := range nodes {
+		if node.Tag == "bot" {
+			t.Fatal("modern reply transport must not include a bot node")
+		}
+	}
+}
+
+func TestNewReplyButtonAdditionalNodesGeneratesRuntimeMetadata(t *testing.T) {
+	before := time.Now().Unix()
+	nodesPointer, err := newReplyButtonAdditionalNodes()
+	after := time.Now().Unix()
+	if err != nil {
+		t.Fatalf("build runtime reply nodes: %v", err)
+	}
+	if nodesPointer == nil || len(*nodesPointer) != 1 || (*nodesPointer)[0].Tag != "biz" {
+		t.Fatalf("nodes = %#v, want one biz node", nodesPointer)
+	}
+
+	biz := (*nodesPointer)[0]
+	timestampText, ok := biz.Attrs["privacy_mode_ts"].(string)
+	if !ok {
+		t.Fatalf("privacy_mode_ts = %#v, want string", biz.Attrs["privacy_mode_ts"])
+	}
+	timestamp, err := strconv.ParseInt(timestampText, 10, 64)
+	if err != nil || timestamp < before || timestamp > after {
+		t.Fatalf("privacy_mode_ts = %q, want Unix timestamp between %d and %d (parse error: %v)", timestampText, before, after, err)
+	}
+
+	children, ok := biz.Content.([]waBinary.Node)
+	if !ok {
+		t.Fatalf("biz content = %#v, want child nodes", biz.Content)
+	}
+	var qualityControl *waBinary.Node
+	for i := range children {
+		if children[i].Tag == "quality_control" {
+			qualityControl = &children[i]
+			break
+		}
+	}
+	if qualityControl == nil {
+		t.Fatal("biz node must contain quality_control")
+	}
+	decisionID, ok := qualityControl.Attrs["decision_id"].(string)
+	if !ok || len(decisionID) != 40 {
+		t.Fatalf("decision_id = %#v, want 40 hexadecimal characters", qualityControl.Attrs["decision_id"])
+	}
+	decoded, err := hex.DecodeString(decisionID)
+	if err != nil || len(decoded) != 20 {
+		t.Fatalf("decision_id = %q, want 20 decodable bytes (decode error: %v)", decisionID, err)
+	}
+}
+
+func TestUsesModernReplyButtonsOnlyForTextReplies(t *testing.T) {
+	tests := []struct {
+		name          string
+		data          ButtonStruct
+		hasReply      bool
+		hasOtherTypes bool
+		hasPix        bool
+		want          bool
+	}{
+		{name: "text reply", hasReply: true, want: true},
+		{name: "reply with image", data: ButtonStruct{ImageUrl: "https://example.com/image.jpg"}, hasReply: true},
+		{name: "reply with video", data: ButtonStruct{VideoUrl: "https://example.com/video.mp4"}, hasReply: true},
+		{name: "reply with image and video", data: ButtonStruct{ImageUrl: "https://example.com/image.jpg", VideoUrl: "https://example.com/video.mp4"}, hasReply: true},
+		{name: "reply with whitespace image URL", data: ButtonStruct{ImageUrl: " \t "}, hasReply: true},
+		{name: "reply with whitespace video URL", data: ButtonStruct{VideoUrl: " \n "}, hasReply: true},
+		{name: "reply mixed with CTA", hasReply: true, hasOtherTypes: true},
+		{name: "reply mixed with Pix", hasReply: true, hasPix: true},
+		{name: "CTA", hasOtherTypes: true},
+		{name: "Pix", hasPix: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := usesModernReplyButtons(&tt.data, tt.hasReply, tt.hasOtherTypes, tt.hasPix); got != tt.want {
+				t.Fatalf("usesModernReplyButtons() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
