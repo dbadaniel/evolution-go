@@ -539,6 +539,16 @@ func (s *sendHandler) SendButton(ctx *gin.Context) {
 		return
 	}
 
+	for _, button := range data.Buttons {
+		if button.Type != "pix" {
+			continue
+		}
+		if _, err := send_service.NormalizePixKey(button.KeyType, button.Key); err != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
 	message, err := s.sendMessageService.SendButton(data, instance)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

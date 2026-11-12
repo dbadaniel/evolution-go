@@ -138,6 +138,7 @@ curl -X POST http://localhost:4000/send/button \
     "number": "5511999999999",
     "title": "Pagamento PIX",
     "description": "Realize o pagamento via PIX:",
+    "footer": "Chave Pix estática",
     "buttons": [
       {
         "type": "pix",
@@ -149,6 +150,8 @@ curl -X POST http://localhost:4000/send/button \
     ]
   }'
 ```
+
+O botão Pix envia uma chave estática por meio do fluxo `payment_info`. Não é necessário informar valor; a API usa um pedido sem valor no payload interno, seguindo a estrutura de referência do WPPConnect. O envio foi confirmado em celular e WhatsApp Web/Desktop na stage local. Para `keyType: "CPF"`, a API valida os dígitos verificadores, remove pontuação antes do envio e retorna HTTP 400 para CPF inválido.
 
 ---
 
@@ -720,6 +723,6 @@ A instância deve ter o evento `BUTTON_CLICK` ou `MESSAGE` habilitado na configu
 | Botões (url) | ✅ | ✅ | ✅ |
 | Botões (call) | ✅ | ✅ | ✅ |
 | Botões (copy) | ✅ | ✅ | ✅ |
-| Botões (pix) | ✅ | ✅ | ✅ |
+| Botões (pix) | ✅ Testado | ⏳ Pendente | ✅ Testado |
 | Lista | ✅ | ✅ | ✅ |
 | Carrossel | ✅ | ✅ | ✅ |

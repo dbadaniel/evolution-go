@@ -40,7 +40,8 @@ Ambientes de produção reais sofrem com oscilações de rede, mudanças silenci
 
 ### 4. Mensagens Interativas Multiplataforma (Android, iOS e WhatsApp Web)
 - **Botões de resposta rápida (`POST /send/button`):** Replies textuais são enviados como `InteractiveMessage` no nível principal, sem envelope `ViewOnceMessage`; formato confirmado em celular e WhatsApp para Windows. Cada botão usa `type: "reply"`, `id` e `displayText`.
-- **Listas, CTA e Pix:** Reconciliação dos nós de transporte (`biz`, `native_flow`, `product_list`) e `DocumentWithCaptionMessage` conforme o tipo de mensagem.
+- **Pix (`payment_info`):** Envia chave estática em `InteractiveMessage` no nível principal com payload de pagamento sem valor, seguindo a referência do WPPConnect. O envio foi confirmado no celular e no WhatsApp Web/Desktop na stage local. A API valida CPF Pix, normaliza sua formatação e retorna HTTP 400 para CPF inválido.
+- **Listas e CTA:** Reconciliação dos nós de transporte (`biz`, `native_flow`, `product_list`) e `DocumentWithCaptionMessage` conforme o tipo de mensagem.
 - **Correção do erro `473` em botões CTA (`url`, `call`, `copy`):** Payload enxuto sem nós `bot` incompatíveis com contas padrão vinculadas.
 - **Carrossel (`POST /send/carousel`):** Envio de cards ricos com imagens, textos, rodapés, botões interativos e geração automática de thumbnails JPEG para carregamento instantâneo.
 

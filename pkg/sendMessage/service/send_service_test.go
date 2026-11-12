@@ -109,6 +109,101 @@ func TestBuildCTAButtonMessageOmitsEmptyFooterAndExtraFields(t *testing.T) {
 	}
 }
 
+func TestBuildPixNativeFlowButtonUsesWebCompatiblePaymentInfoPayload(t *testing.T) {
+	button, err := buildPixNativeFlowButton(Button{
+		Currency: "BRL",
+		Name:     "Loja de Teste",
+		KeyType:  "CPF",
+		Key:      "12345678909",
+	})
+	if err != nil {
+		t.Fatalf("build PIX button: %v", err)
+	}
+	if button.GetName() != "payment_info" {
+		t.Fatalf("button name = %q, want payment_info", button.GetName())
+	}
+
+	var params map[string]interface{}
+	if err := json.Unmarshal([]byte(button.GetButtonParamsJSON()), &params); err != nil {
+		t.Fatalf("unmarshal PIX button params: %v", err)
+	}
+	for _, key := range []string{"order", "total_amount", "reference_id", "payment_settings", "external_payment_configurations", "additional_note", "currency", "type"} {
+		if _, ok := params[key]; !ok {
+			t.Errorf("PIX params missing %q: %#v", key, params)
+		}
+	}
+	settings, ok := params["payment_settings"].([]interface{})
+	if !ok || len(settings) != 2 {
+		t.Fatalf("payment_settings = %#v, want static PIX and disabled cards", params["payment_settings"])
+	}
+	setting, ok := settings[0].(map[string]interface{})
+	if !ok || setting["type"] != "pix_static_code" {
+		t.Fatalf("payment setting = %#v, want pix_static_code", settings[0])
+	}
+	pix, ok := setting["pix_static_code"].(map[string]interface{})
+	if !ok || pix["merchant_name"] != "Loja de Teste" || pix["key"] != "12345678909" || pix["key_type"] != "CPF" {
+		t.Fatalf("pix_static_code = %#v, want supplied static key details", setting["pix_static_code"])
+	}
+	order, ok := params["order"].(map[string]interface{})
+	if !ok || order["order_type"] != "ORDER_WITHOUT_AMOUNT" || order["status"] != "payment_requested" {
+		t.Fatalf("order = %#v, want a payment request without amount", params["order"])
+	}
+	if params["currency"] != "BRL" || params["type"] != "physical-goods" {
+		t.Fatalf("currency/type = %#v/%#v, want BRL/physical-goods", params["currency"], params["type"])
+	}
+}
+
+func TestNormalizePixKeyValidatesAndNormalizesCPF(t *testing.T) {
+	got, err := NormalizePixKey("cpf", "123.456.789-09")
+	if err != nil {
+		t.Fatalf("NormalizePixKey(valid CPF) error = %v", err)
+	}
+	if got != "12345678909" {
+		t.Fatalf("NormalizePixKey(valid CPF) = %q, want digits only", got)
+	}
+
+	for _, key := range []string{"12345678900", "11111111111", "12345"} {
+		if _, err := NormalizePixKey("CPF", key); err == nil {
+			t.Errorf("NormalizePixKey(%q) succeeded, want invalid CPF error", key)
+		}
+	}
+}
+
+func TestBuildPixButtonMessageUsesTopLevelPaymentInfoFlow(t *testing.T) {
+	button, err := buildPixNativeFlowButton(Button{Name: "Loja", KeyType: "random", Key: "test-key"})
+	if err != nil {
+		t.Fatalf("build PIX button: %v", err)
+	}
+	secret := bytes.Repeat([]byte{0x3c}, 32)
+	msg := buildPixButtonMessage(&ButtonStruct{
+		Title:       "Pix de teste",
+		Description: "Use a chave abaixo",
+		Footer:      "Loja",
+	}, button, secret)
+
+	if msg.GetInteractiveMessage() == nil || msg.GetDocumentWithCaptionMessage() != nil || msg.GetViewOnceMessage() != nil {
+		t.Fatal("PIX must use a top-level InteractiveMessage without legacy or ViewOnce wrappers")
+	}
+	interactive := msg.GetInteractiveMessage()
+	if interactive.GetBody().GetText() != "*Pix de teste*\n\nUse a chave abaixo" || interactive.GetFooter().GetText() != "Loja" {
+		t.Fatalf("unexpected PIX body/footer: %q / %q", interactive.GetBody().GetText(), interactive.GetFooter().GetText())
+	}
+	nativeFlow := interactive.GetNativeFlowMessage()
+	if nativeFlow == nil || nativeFlow.GetMessageVersion() != 1 || nativeFlow.GetMessageParamsJSON() != "{}" {
+		t.Fatalf("PIX native flow = %#v, want version 1 and empty params", nativeFlow)
+	}
+	if len(nativeFlow.GetButtons()) != 1 || nativeFlow.GetButtons()[0].GetName() != "payment_info" {
+		t.Fatalf("PIX buttons = %#v, want one payment_info button", nativeFlow.GetButtons())
+	}
+	contextInfo := msg.GetMessageContextInfo()
+	if !bytes.Equal(contextInfo.GetMessageSecret(), secret) {
+		t.Fatal("PIX payload must preserve MessageSecret")
+	}
+	if contextInfo.GetDeviceListMetadata() == nil || contextInfo.GetDeviceListMetadataVersion() != 2 {
+		t.Fatal("PIX payload must include version 2 device-list metadata for linked clients")
+	}
+}
+
 func TestBuildReplyButtonMessageUsesTopLevelNativeFlow(t *testing.T) {
 	data := &ButtonStruct{
 		Title:       "Confirmacao",
@@ -389,11 +484,9 @@ func TestBuildButtonAdditionalNodes(t *testing.T) {
 			wantNativeFlow: "mixed",
 		},
 		{
-			name:           "Pix individual preserves bot",
-			hasPix:         true,
-			number:         "5511999999999@s.whatsapp.net",
-			wantNativeFlow: "payment_info",
-			wantBot:        true,
+			name:   "Pix individual uses payment biz node",
+			hasPix: true,
+			number: "5511999999999@s.whatsapp.net",
 		},
 		{
 			name:           "non-CTA individual preserves bot",
@@ -406,6 +499,12 @@ func TestBuildButtonAdditionalNodes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			nodes := *buildButtonAdditionalNodes(tt.hasPix, tt.hasCTA, tt.number)
+			if tt.hasPix {
+				if len(nodes) != 1 || nodes[0].Tag != "biz" || nodes[0].Attrs["native_flow_name"] != "payment_info" || nodes[0].Content != nil {
+					t.Fatalf("PIX nodes = %#v, want a flat payment_info biz node", nodes)
+				}
+				return
+			}
 			if len(nodes) == 0 || nodes[0].Tag != "biz" {
 				t.Fatalf("first node = %#v, want biz", nodes)
 			}

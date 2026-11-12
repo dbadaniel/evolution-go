@@ -138,9 +138,18 @@ Ported selectively from `NathanAshford/evolution-go-custom` for CTA error 473:
 - A real send with a single URL CTA was still rejected with 473 after slimming
   the protobuf payload. CTA transport now keeps `biz/native_flow/mixed` but omits
   `bot biz_bot=1`, avoiding a bot capability that the linked account may not
-  have. Pix keeps its existing `biz/payment_info` and `bot` nodes.
-- Pix composition remains unchanged. Text-only reply buttons use the wrapped
-  native-flow path described above; media replies remain legacy.
+  have.
+- Pix uses a top-level `InteractiveMessage`, a `payment_info` button with
+  static-key `payment_settings`, `MessageParamsJSON={}`, `MessageVersion=1`,
+  `MessageSecret`, device-list metadata v2, and a flat
+  `<biz native_flow_name="payment_info"/>` node, with the fuller no-amount
+  order payload used by WPPConnect. The complete send was confirmed on a phone
+  and WhatsApp Web/Desktop through the local stage. The `order_details` params, nested
+  `biz > interactive > native_flow` node, and `bot biz_bot=1` from Evolution
+  API's Baileys-specific PR were tested here but did not produce a delivery
+  receipt; that combination was discarded. CPF Pix keys are checked and
+  normalized before sending. A
+  `DeviceSentMessage` experiment was also reverted because it stopped delivery.
 
 ## Sensitive Files
 

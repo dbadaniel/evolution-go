@@ -2300,6 +2300,58 @@ func mapKeyType(keyType string) string {
 	}
 }
 
+func NormalizePixKey(keyType, key string) (string, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", errors.New("chave Pix é obrigatória")
+	}
+	if !strings.EqualFold(strings.TrimSpace(keyType), "cpf") {
+		return key, nil
+	}
+
+	var digits strings.Builder
+	for _, char := range key {
+		if char >= '0' && char <= '9' {
+			digits.WriteRune(char)
+		} else if char != '.' && char != '-' && !unicode.IsSpace(char) {
+			return "", errors.New("chave Pix CPF inválida")
+		}
+	}
+	value := digits.String()
+	if len(value) != 11 || allDigitsEqual(value) {
+		return "", errors.New("chave Pix CPF inválida")
+	}
+
+	values := make([]int, len(value))
+	for i, char := range value {
+		values[i] = int(char - '0')
+	}
+	calculateDigit := func(length int) int {
+		sum := 0
+		for i := 0; i < length; i++ {
+			sum += values[i] * (length + 1 - i)
+		}
+		remainder := sum % 11
+		if remainder < 2 {
+			return 0
+		}
+		return 11 - remainder
+	}
+	if calculateDigit(9) != values[9] || calculateDigit(10) != values[10] {
+		return "", errors.New("chave Pix CPF inválida")
+	}
+	return value, nil
+}
+
+func allDigitsEqual(value string) bool {
+	for i := 1; i < len(value); i++ {
+		if value[i] != value[0] {
+			return false
+		}
+	}
+	return true
+}
+
 func buildCTAButtonMessage(data *ButtonStruct, buttons []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, messageParamsJSON string, msgSecret []byte) *waE2E.Message {
 	body := "*" + data.Title + "*"
 	if data.Description != "" {
@@ -2492,11 +2544,104 @@ func applyInteractiveMentions(msg *waE2E.Message, mentionedJIDs []string) {
 	}
 }
 
-func buildButtonAdditionalNodes(hasPix, hasCTA bool, number string) *[]waBinary.Node {
-	nativeFlowName := "mixed"
-	if hasPix {
-		nativeFlowName = "payment_info"
+func buildPixNativeFlowButton(button Button) (*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, error) {
+	pixKey, err := NormalizePixKey(button.KeyType, button.Key)
+	if err != nil {
+		return nil, err
 	}
+	orderIDBytes := make([]byte, 8)
+	if _, err := io.ReadFull(cryptoRand.Reader, orderIDBytes); err != nil {
+		return nil, fmt.Errorf("generate PIX order reference: %w", err)
+	}
+	orderID := hex.EncodeToString(orderIDBytes)
+	zeroAmount := map[string]interface{}{"offset": 1, "value": 0}
+	paramsData := map[string]interface{}{
+		"order": map[string]interface{}{
+			"items": []map[string]interface{}{{
+				"name":        "",
+				"retailer_id": "custom-item-" + orderID,
+				"amount":      zeroAmount,
+				"quantity":    0,
+			}},
+			"order_type": "ORDER_WITHOUT_AMOUNT",
+			"status":     "payment_requested",
+			"subtotal":   zeroAmount,
+		},
+		"total_amount": map[string]interface{}{
+			"offset": 1,
+			"value":  0,
+		},
+		"reference_id": orderID,
+		"payment_settings": []map[string]interface{}{{
+			"type": "pix_static_code",
+			"pix_static_code": map[string]interface{}{
+				"merchant_name": button.Name,
+				"key":           pixKey,
+				"key_type":      mapKeyType(button.KeyType),
+			},
+		}, {
+			"type":  "cards",
+			"cards": map[string]interface{}{"enabled": false},
+		}},
+		"external_payment_configurations": []map[string]interface{}{{
+			"payment_instruction": "",
+			"type":                "payment_instruction",
+		}},
+		"additional_note": "",
+		"currency":        "BRL",
+		"type":            "physical-goods",
+	}
+	paramsJSONBytes, err := json.Marshal(paramsData)
+	if err != nil {
+		return nil, err
+	}
+	paramsJSON := string(paramsJSONBytes)
+	return &waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+		Name:             proto.String("payment_info"),
+		ButtonParamsJSON: &paramsJSON,
+	}, nil
+}
+
+func buildPixButtonMessage(data *ButtonStruct, button *waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, msgSecret []byte) *waE2E.Message {
+	body := data.Description
+	if data.Title != "" {
+		body = "*" + data.Title + "*"
+		if data.Description != "" {
+			body += "\n\n" + data.Description
+		}
+	}
+	interactiveMessage := &waE2E.InteractiveMessage{
+		Body: &waE2E.InteractiveMessage_Body{Text: proto.String(body)},
+		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+				Buttons:           []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{button},
+				MessageParamsJSON: proto.String("{}"),
+				MessageVersion:    proto.Int32(1),
+			},
+		},
+	}
+	if data.Footer != "" {
+		interactiveMessage.Footer = &waE2E.InteractiveMessage_Footer{Text: proto.String(data.Footer)}
+	}
+	return &waE2E.Message{
+		InteractiveMessage: interactiveMessage,
+		MessageContextInfo: &waE2E.MessageContextInfo{
+			MessageSecret:             msgSecret,
+			DeviceListMetadata:        &waE2E.DeviceListMetadata{},
+			DeviceListMetadataVersion: proto.Int32(2),
+		},
+	}
+}
+
+func buildButtonAdditionalNodes(hasPix, hasCTA bool, number string) *[]waBinary.Node {
+	if hasPix {
+		return &[]waBinary.Node{{
+			Tag:   "biz",
+			Attrs: waBinary.Attrs{"native_flow_name": "payment_info"},
+		}}
+	}
+
+	nativeFlowName := "mixed"
 
 	bizNodes := []waBinary.Node{
 		{
@@ -2613,39 +2758,12 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 				"phone_number": v.PhoneNumber,
 			}
 		case "pix":
-			randomId := utils.GenerateRandomString(11)
-			name = "payment_info"
-			amount := map[string]interface{}{"value": 0, "offset": 100}
-			paramsData = map[string]interface{}{
-				"currency":     v.Currency,
-				"total_amount": amount,
-				"reference_id": randomId,
-				"type":         "physical-goods",
-				"order": map[string]interface{}{
-					"status":     "pending",
-					"subtotal":   amount,
-					"order_type": "ORDER",
-					"items": []map[string]interface{}{
-						{
-							"name":        "",
-							"amount":      amount,
-							"quantity":    0,
-							"sale_amount": amount,
-						},
-					},
-				},
-				"payment_settings": []map[string]interface{}{
-					{
-						"type": "pix_static_code",
-						"pix_static_code": map[string]interface{}{
-							"merchant_name": v.Name,
-							"key":           v.Key,
-							"key_type":      mapKeyType(v.KeyType),
-						},
-					},
-				},
-				"share_payment_status": false,
+			pixButton, err := buildPixNativeFlowButton(v)
+			if err != nil {
+				return nil, err
 			}
+			buttons = append(buttons, pixButton)
+			continue
 		default:
 			return nil, fmt.Errorf("tipo de botão inválido: %s", v.Type)
 		}
@@ -2679,31 +2797,7 @@ func (s *sendService) SendButton(data *ButtonStruct, instance *instance_model.In
 	if useModernReply {
 		msg = buildReplyButtonMessage(data, buttons, messageParamsJSON, msgSecret)
 	} else if hasPix {
-		paymentMsgParams := `{"native_flow_name":"order_details","version":1}`
-		var interactiveBody *waE2E.InteractiveMessage_Body
-		if data.Title != "" {
-			interactiveBody = &waE2E.InteractiveMessage_Body{Text: &data.Title}
-		}
-
-		msg = &waE2E.Message{
-			DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
-				Message: &waE2E.Message{
-					InteractiveMessage: &waE2E.InteractiveMessage{
-						Body: interactiveBody,
-						InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
-							NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
-								Buttons:           buttons,
-								MessageParamsJSON: &paymentMsgParams,
-								MessageVersion:    proto.Int32(1),
-							},
-						},
-					},
-				},
-			},
-			MessageContextInfo: &waE2E.MessageContextInfo{
-				MessageSecret: msgSecret,
-			},
-		}
+		msg = buildPixButtonMessage(data, buttons[0], msgSecret)
 	} else {
 		if hasReply {
 			var replyButtons []*waE2E.ButtonsMessage_Button
