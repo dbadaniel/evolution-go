@@ -2375,13 +2375,11 @@ func buildCTAButtonMessage(data *ButtonStruct, buttons []*waE2E.InteractiveMessa
 	}
 
 	return &waE2E.Message{
-		DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
-			Message: &waE2E.Message{
-				InteractiveMessage: interactiveMessage,
-			},
-		},
+		InteractiveMessage: interactiveMessage,
 		MessageContextInfo: &waE2E.MessageContextInfo{
-			MessageSecret: msgSecret,
+			MessageSecret:             msgSecret,
+			DeviceListMetadata:        &waE2E.DeviceListMetadata{},
+			DeviceListMetadataVersion: proto.Int32(2),
 		},
 	}
 }
@@ -2655,6 +2653,7 @@ func buildButtonAdditionalNodes(hasPix, hasCTA bool, number string) *[]waBinary.
 				Content: []waBinary.Node{{
 					Tag: "native_flow",
 					Attrs: waBinary.Attrs{
+						"v":    "9",
 						"name": nativeFlowName,
 					},
 				}},
@@ -2909,6 +2908,14 @@ func stringPointer(s string) *string {
 	return &s
 }
 
+type ListValidationError struct {
+	message string
+}
+
+func (e *ListValidationError) Error() string {
+	return e.message
+}
+
 func sectionsToString(data *ListStruct) (string, error) {
 	type row struct {
 		Header      string `json:"header"`
@@ -2927,8 +2934,35 @@ func sectionsToString(data *ListStruct) (string, error) {
 		Title    string        `json:"title"`
 		Sections []listSection `json:"sections"`
 	}
+	if data == nil {
+		return "", &ListValidationError{message: "list is required"}
+	}
+	if len(data.Sections) == 0 || len(data.Sections) > 10 {
+		return "", &ListValidationError{message: "list must contain between 1 and 10 sections"}
+	}
+	totalRows := 0
+	usedIDs := make(map[string]bool)
+	for sectionIndex, section := range data.Sections {
+		if len(section.Rows) == 0 {
+			return "", &ListValidationError{message: fmt.Sprintf("section %d must contain at least one row", sectionIndex+1)}
+		}
+		totalRows += len(section.Rows)
+		for _, row := range section.Rows {
+			if row.RowId == "" {
+				continue
+			}
+			if usedIDs[row.RowId] {
+				return "", &ListValidationError{message: fmt.Sprintf("duplicate list row id: %s", row.RowId)}
+			}
+			usedIDs[row.RowId] = true
+		}
+	}
+	if totalRows > 10 {
+		return "", &ListValidationError{message: "list must contain between 1 and 10 rows in total"}
+	}
 
 	sections := []listSection{}
+	generatedRows := 0
 
 	for _, s := range data.Sections {
 		sectionTitle := s.Title
@@ -2948,7 +2982,14 @@ func sectionsToString(data *ListStruct) (string, error) {
 			}
 			rowId := r.RowId
 			if rowId == "" {
-				rowId = fmt.Sprintf("row_%d", len(rows))
+				for {
+					rowId = fmt.Sprintf("row_%d", generatedRows)
+					generatedRows++
+					if !usedIDs[rowId] {
+						usedIDs[rowId] = true
+						break
+					}
+				}
 			}
 			rows = append(rows, row{
 				Header:      rowTitle,
@@ -2986,85 +3027,27 @@ func sectionsToString(data *ListStruct) (string, error) {
 }
 
 func (s *sendService) SendList(data *ListStruct, instance *instance_model.Instance) (*MessageSendStruct, error) {
-	// Legacy ListMessage format - works on iOS, Android and Web
-	// Matching PAPI Node.js default (non-modern) path exactly
-
-	buttonText := data.ButtonText
-	if buttonText == "" {
-		buttonText = "Ver Menu"
-	}
-
-	// Build sections in legacy ListMessage format
-	var sections []*waE2E.ListMessage_Section
-	for _, sec := range data.Sections {
-		sectionTitle := sec.Title
-		if sectionTitle == "" {
-			sectionTitle = " "
-		}
-		var rows []*waE2E.ListMessage_Row
-		for i, r := range sec.Rows {
-			rowTitle := r.Title
-			if rowTitle == "" {
-				rowTitle = " "
-			}
-			rowId := r.RowId
-			if rowId == "" {
-				rowId = fmt.Sprintf("row_%d_%d", i, len(rows))
-			}
-			rows = append(rows, &waE2E.ListMessage_Row{
-				Title:       proto.String(rowTitle),
-				Description: proto.String(r.Description),
-				RowID:       proto.String(rowId),
-			})
-		}
-		sections = append(sections, &waE2E.ListMessage_Section{
-			Title: proto.String(sectionTitle),
-			Rows:  rows,
-		})
-	}
-
-	listType := waE2E.ListMessage_SINGLE_SELECT
-	listMessage := &waE2E.ListMessage{
-		Title:       proto.String(data.Title),
-		Description: proto.String(data.Description),
-		ButtonText:  proto.String(buttonText),
-		FooterText:  proto.String(data.FooterText),
-		ListType:    &listType,
-		Sections:    sections,
-	}
-
 	listMsgSecret := make([]byte, 32)
-	_, _ = cryptoRand.Read(listMsgSecret)
-
-	msg := &waE2E.Message{
-		DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
-			Message: &waE2E.Message{
-				ListMessage: listMessage,
-			},
-		},
-		MessageContextInfo: &waE2E.MessageContextInfo{
-			MessageSecret: listMsgSecret,
-		},
+	if _, err := cryptoRand.Read(listMsgSecret); err != nil {
+		return nil, fmt.Errorf("generate list message secret: %w", err)
+	}
+	msg, err := buildListMessage(data, listMsgSecret)
+	if err != nil {
+		return nil, err
+	}
+	// Preserve reply quality-control metadata while testing the legacy list transport.
+	additionalNodes, err := newReplyButtonAdditionalNodes()
+	if err != nil {
+		return nil, fmt.Errorf("generate list transport metadata: %w", err)
 	}
 
-	listBizNodes := []waBinary.Node{
-		{
-			Tag: "biz",
-			Content: []waBinary.Node{{
-				Tag: "list",
-				Attrs: waBinary.Attrs{
-					"v":    "2",
-					"type": "product_list",
-				},
-			}},
-		},
+	// The helper returns fresh nodes, so changing this list's nodes cannot affect replies.
+	bizChildren := (*additionalNodes)[0].Content.([]waBinary.Node)
+	bizChildren[0] = waBinary.Node{
+		Tag:   "list",
+		Attrs: waBinary.Attrs{"v": "2", "type": "product_list"},
 	}
-	if !strings.Contains(data.Number, "@g.us") {
-		listBizNodes = append(listBizNodes, waBinary.Node{
-			Tag:   "bot",
-			Attrs: waBinary.Attrs{"biz_bot": "1"},
-		})
-	}
+	(*additionalNodes)[0].Content = bizChildren
 
 	message, err := s.SendMessage(instance, msg, "ListMessage", &SendDataStruct{
 		Id:              data.Id,
@@ -3074,9 +3057,8 @@ func (s *sendService) SendList(data *ListStruct, instance *instance_model.Instan
 		MentionedJID:    data.MentionedJID,
 		FormatJid:       data.FormatJid,
 		Quoted:          data.Quoted,
-		AdditionalNodes: &listBizNodes,
+		AdditionalNodes: additionalNodes,
 	})
-
 	if err != nil {
 		s.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Error sending list: %v", instance.Id, err)
 		return nil, err
@@ -3086,6 +3068,58 @@ func (s *sendService) SendList(data *ListStruct, instance *instance_model.Instan
 	return message, nil
 }
 
+func buildListMessage(data *ListStruct, messageSecret []byte) (*waE2E.Message, error) {
+	selectParams, err := sectionsToString(data)
+	if err != nil {
+		return nil, err
+	}
+	// Reuse normalized selector IDs and defaults after the existing validation.
+	var selector struct {
+		Title    string `json:"title"`
+		Sections []struct {
+			Title string `json:"title"`
+			Rows  []struct {
+				Title       string `json:"title"`
+				Description string `json:"description"`
+				ID          string `json:"id"`
+			} `json:"rows"`
+		} `json:"sections"`
+	}
+	if err := json.Unmarshal([]byte(selectParams), &selector); err != nil {
+		return nil, fmt.Errorf("decode normalized list sections: %w", err)
+	}
+	sections := make([]*waE2E.ListMessage_Section, 0, len(selector.Sections))
+	for _, section := range selector.Sections {
+		rows := make([]*waE2E.ListMessage_Row, 0, len(section.Rows))
+		for _, row := range section.Rows {
+			rows = append(rows, &waE2E.ListMessage_Row{
+				Title:       proto.String(row.Title),
+				Description: proto.String(row.Description),
+				RowID:       proto.String(row.ID),
+			})
+		}
+		sections = append(sections, &waE2E.ListMessage_Section{
+			Title: proto.String(section.Title),
+			Rows:  rows,
+		})
+	}
+	return &waE2E.Message{
+		ListMessage: &waE2E.ListMessage{
+			Title:       proto.String(data.Title),
+			Description: proto.String(data.Description),
+			ButtonText:  proto.String(selector.Title),
+			FooterText:  proto.String(data.FooterText),
+			ListType:    waE2E.ListMessage_SINGLE_SELECT.Enum(),
+			Sections:    sections,
+			ContextInfo: &waE2E.ContextInfo{},
+		},
+		MessageContextInfo: &waE2E.MessageContextInfo{
+			MessageSecret:             messageSecret,
+			DeviceListMetadata:        &waE2E.DeviceListMetadata{},
+			DeviceListMetadataVersion: proto.Int32(2),
+		},
+	}, nil
+}
 func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.Message, messageType string, data *SendDataStruct) (*MessageSendStruct, error) {
 	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] SendMessage called for number: %s, type: %s", instance.Id, data.Number, messageType)
 

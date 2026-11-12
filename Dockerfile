@@ -6,8 +6,9 @@ WORKDIR /build
 
 # Copiar apenas arquivos de dependências primeiro para cachear o download
 COPY go.mod go.sum ./
+COPY third_party/whatsmeow ./third_party/whatsmeow
 
-# Baixar a versão oficial do whatsmeow fixada no go.mod
+# Baixar dependências com a cópia local do whatsmeow fixado
 RUN go mod download
 
 # Copiar o restante do código

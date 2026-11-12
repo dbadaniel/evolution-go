@@ -2,6 +2,7 @@ package send_handler
 
 import (
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -584,6 +585,10 @@ func (s *sendHandler) SendList(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if data == nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "list is required"})
+		return
+	}
 
 	if data.Number == "" {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "phone number is required"})
@@ -612,6 +617,11 @@ func (s *sendHandler) SendList(ctx *gin.Context) {
 
 	message, err := s.sendMessageService.SendList(data, instance)
 	if err != nil {
+		var validationErr *send_service.ListValidationError
+		if errors.As(err, &validationErr) {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

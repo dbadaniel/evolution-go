@@ -1,6 +1,6 @@
 # API de Mensagens Interativas
 
-Documentação completa dos endpoints para enviar mensagens interativas no WhatsApp: botões, listas e carrosséis. Todos os endpoints são compatíveis com **Android**, **iOS (iPhone)** e **WhatsApp Web/Desktop**.
+Documentação dos endpoints de mensagens interativas no WhatsApp. A compatibilidade validada de cada tipo está indicada na tabela ao final.
 
 ## 📋 Índice
 
@@ -159,6 +159,12 @@ O botão Pix envia uma chave estática por meio do fluxo `payment_info`. Não é
 
 Envia uma mensagem com lista de opções organizadas em seções. O usuário toca no botão para abrir a lista e seleciona uma opção.
 
+O payload interno usa `ListMessage` no nível principal, com `listType: SINGLE_SELECT`, sem envelopes. O transporte usa tipo `text` e exatamente um nó `biz/list` com `type=product_list`, metadados `quality_control` e nenhum nó `bot`. O patch restrito do whatsmeow em `third_party/whatsmeow` evita a injeção de outro nó `biz`.
+
+Envio e abertura do menu confirmados no celular Android e no WhatsApp Web em 12/11/2026. O formato moderno `InteractiveMessage/single_select` funcionou apenas no celular durante os testes e não é usado para listas nesta versão. HTTP 200 isolado continua significando apenas ACK; acompanhe também o evento de entrega.
+
+O contrato JSON abaixo permanece igual; são permitidas até 10 seções e 10 opções no total, com pelo menos uma opção por seção. IDs de opções explícitos devem ser únicos; IDs ausentes são gerados sem colisões.
+
 **Endpoint**: `POST /send/list`
 
 **Headers**:
@@ -201,9 +207,9 @@ apikey: SUA-CHAVE-API
 | `number` | string | ✅ Sim | Número do destinatário |
 | `description` | string | ✅ Sim | Texto do corpo da mensagem |
 | `sections` | array | ✅ Sim | Array de seções contendo rows |
-| `buttonText` | string | ❌ Não | Texto do botão que abre a lista (padrão: "Ver Menu") |
-| `title` | string | ❌ Não | Título em negrito no topo |
-| `footerText` | string | ❌ Não | Texto do rodapé |
+| `buttonText` | string | ✅ Sim | Texto do botão que abre a lista |
+| `title` | string | ✅ Sim | Título em negrito no topo |
+| `footerText` | string | ✅ Sim | Texto do rodapé |
 | `delay` | int32 | ❌ Não | Delay em milissegundos antes de enviar |
 | `mentionedJid` | string | ❌ Não | JID do usuário a mencionar |
 | `mentionAll` | bool | ❌ Não | Mencionar todos (apenas grupos) |
@@ -724,5 +730,5 @@ A instância deve ter o evento `BUTTON_CLICK` ou `MESSAGE` habilitado na configu
 | Botões (call) | ✅ | ✅ | ✅ |
 | Botões (copy) | ✅ | ✅ | ✅ |
 | Botões (pix) | ✅ Testado | ⏳ Pendente | ✅ Testado |
-| Lista | ✅ | ✅ | ✅ |
+| Lista | ✅ Testado | ⏳ Não testado | ✅ Testado |
 | Carrossel | ✅ | ✅ | ✅ |

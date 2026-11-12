@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/png"
 	"io"
@@ -47,10 +48,10 @@ func TestBuildCTAButtonMessageUsesLeanNativeFlowPayload(t *testing.T) {
 	secret := bytes.Repeat([]byte{0x2a}, 32)
 
 	msg := buildCTAButtonMessage(data, buttons, messageParamsJSON, secret)
-	if msg.GetDocumentWithCaptionMessage() == nil || msg.GetDocumentWithCaptionMessage().GetMessage() == nil {
-		t.Fatal("CTA must be wrapped in DocumentWithCaptionMessage")
+	if msg.GetInteractiveMessage() == nil || msg.GetDocumentWithCaptionMessage() != nil {
+		t.Fatal("CTA must use a top-level InteractiveMessage without DocumentWithCaptionMessage")
 	}
-	interactive := msg.GetDocumentWithCaptionMessage().GetMessage().GetInteractiveMessage()
+	interactive := msg.GetInteractiveMessage()
 	if interactive == nil {
 		t.Fatal("CTA wrapper must contain InteractiveMessage")
 	}
@@ -96,11 +97,14 @@ func TestBuildCTAButtonMessageUsesLeanNativeFlowPayload(t *testing.T) {
 	if !bytes.Equal(msg.GetMessageContextInfo().GetMessageSecret(), secret) {
 		t.Fatal("CTA payload must preserve MessageSecret")
 	}
+	if msg.GetMessageContextInfo().GetDeviceListMetadata() == nil || msg.GetMessageContextInfo().GetDeviceListMetadataVersion() != 2 {
+		t.Fatal("CTA payload must include version 2 device-list metadata for linked clients")
+	}
 }
 
 func TestBuildCTAButtonMessageOmitsEmptyFooterAndExtraFields(t *testing.T) {
 	msg := buildCTAButtonMessage(&ButtonStruct{Title: "Oferta"}, nil, `{}`, []byte("secret"))
-	interactive := msg.GetDocumentWithCaptionMessage().GetMessage().GetInteractiveMessage()
+	interactive := msg.GetInteractiveMessage()
 	if interactive.GetFooter() != nil {
 		t.Fatal("empty footer must be omitted for client compatibility")
 	}
@@ -109,6 +113,137 @@ func TestBuildCTAButtonMessageOmitsEmptyFooterAndExtraFields(t *testing.T) {
 	}
 }
 
+func TestBuildListMessageSerializesLegacySingleSelectPayload(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x5a}, 32)
+	data := &ListStruct{
+		Title:       "Teste de lista",
+		Description: "Escolha uma opção:\ncom \"aspas\"",
+		FooterText:  "Rodapé",
+		ButtonText:  "Ver opções",
+		Sections: []Section{{
+			Title: "Opções",
+			Rows:  []Row{{Title: "Primeira", Description: "Detalhe especial: ç", RowId: "opcao-1"}},
+		}},
+	}
+
+	msg, err := buildListMessage(data, secret)
+	if err != nil {
+		t.Fatalf("build list: %v", err)
+	}
+	wire, err := proto.Marshal(msg)
+	if err != nil {
+		t.Fatalf("serialize list: %v", err)
+	}
+	decoded := &waE2E.Message{}
+	if err := proto.Unmarshal(wire, decoded); err != nil {
+		t.Fatalf("deserialize list: %v", err)
+	}
+	msg = decoded
+	if msg.GetInteractiveMessage() != nil || msg.GetDocumentWithCaptionMessage() != nil || msg.GetViewOnceMessage() != nil || msg.GetViewOnceMessageV2() != nil {
+		t.Fatal("list must use a top-level legacy ListMessage without wrappers")
+	}
+	list := msg.GetListMessage()
+	if list == nil || list.GetListType() != waE2E.ListMessage_SINGLE_SELECT || list.GetContextInfo() == nil {
+		t.Fatal("list must retain SINGLE_SELECT and empty ContextInfo")
+	}
+	if list.GetTitle() != data.Title || list.GetDescription() != data.Description || list.GetButtonText() != data.ButtonText || list.GetFooterText() != data.FooterText {
+		t.Fatalf("list fields changed: %v", list)
+	}
+	if len(list.GetSections()) != 1 || len(list.GetSections()[0].GetRows()) != 1 {
+		t.Fatalf("unexpected sections: %v", list.GetSections())
+	}
+	section := list.GetSections()[0]
+	row := section.GetRows()[0]
+	originalRow := data.Sections[0].Rows[0]
+	if section.GetTitle() != data.Sections[0].Title || row.GetRowID() != originalRow.RowId || row.GetTitle() != originalRow.Title || row.GetDescription() != originalRow.Description {
+		t.Fatalf("list did not preserve Unicode section and row fields: %v", list)
+	}
+	context := msg.GetMessageContextInfo()
+	if !bytes.Equal(context.GetMessageSecret(), secret) || context.GetDeviceListMetadata() == nil || context.GetDeviceListMetadataVersion() != 2 {
+		t.Fatal("list must preserve MessageSecret and device-list metadata v2")
+	}
+}
+
+func TestListGeneratedIDsAreUniqueAcrossSectionsAndExplicitIDs(t *testing.T) {
+	data := &ListStruct{
+		Description: "Escolha",
+		Sections: []Section{
+			{Rows: []Row{{}, {}}},
+			{Rows: []Row{{RowId: "row_0"}, {RowId: "row_2"}}},
+		},
+	}
+	msg, err := buildListMessage(data, []byte("secret"))
+	if err != nil {
+		t.Fatalf("build list: %v", err)
+	}
+	list := msg.GetListMessage()
+	if list.GetDescription() != data.Description || list.GetTitle() != "" || list.GetFooterText() != "" {
+		t.Fatal("description-only list must preserve empty title and footer")
+	}
+	if list.GetButtonText() != "Ver Menu" || len(list.GetSections()) != 2 || len(list.GetSections()[0].GetRows()) != 2 || len(list.GetSections()[1].GetRows()) != 2 {
+		t.Fatalf("unexpected list: %v", list)
+	}
+	used := make(map[string]bool)
+	for _, section := range list.Sections {
+		for _, row := range section.Rows {
+			if row.GetRowID() == "" || used[row.GetRowID()] {
+				t.Fatalf("missing or duplicate generated ID %q", row.GetRowID())
+			}
+			used[row.GetRowID()] = true
+		}
+	}
+	if len(used) != 4 || list.Sections[1].Rows[0].GetRowID() != "row_0" || list.Sections[1].Rows[1].GetRowID() != "row_2" {
+		t.Fatalf("explicit row IDs changed: %#v", list)
+	}
+}
+
+func TestSendListRejectsInvalidStructureBeforeClientAccess(t *testing.T) {
+	elevenRows := make([]Row, 11)
+	elevenSections := make([]Section, 11)
+	for index := range elevenSections {
+		elevenSections[index].Rows = []Row{{}}
+	}
+	cases := []struct {
+		name string
+		data *ListStruct
+	}{
+		{"nil list", nil},
+		{"no sections", &ListStruct{}},
+		{"too many sections", &ListStruct{Sections: elevenSections}},
+		{"empty section", &ListStruct{Sections: []Section{{}}}},
+		{"too many rows", &ListStruct{Sections: []Section{{Rows: elevenRows}}}},
+		{"rows limit spans sections", &ListStruct{Sections: []Section{{Rows: make([]Row, 6)}, {Rows: make([]Row, 5)}}}},
+		{"duplicate IDs across sections", &ListStruct{Sections: []Section{{Rows: []Row{{RowId: "same"}}}, {Rows: []Row{{RowId: "same"}}}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// No instance or client exists: validation must finish before any
+			// WhatsApp/client lookup, rather than dispatching a malformed menu.
+			service := &sendService{}
+			_, err := service.SendList(tc.data, nil)
+			var validationErr *ListValidationError
+			if !errors.As(err, &validationErr) {
+				t.Fatalf("expected typed list validation error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestListAcceptsSectionAndRowBoundaries(t *testing.T) {
+	tenSections := make([]Section, 10)
+	for index := range tenSections {
+		tenSections[index].Rows = []Row{{}}
+	}
+	for _, data := range []*ListStruct{
+		{Sections: []Section{{Rows: []Row{{}}}}},
+		{Sections: []Section{{Rows: make([]Row, 10)}}},
+		{Sections: tenSections},
+	} {
+		if _, err := sectionsToString(data); err != nil {
+			t.Fatalf("valid section/row boundary was rejected: %v", err)
+		}
+	}
+}
 func TestBuildPixNativeFlowButtonUsesWebCompatiblePaymentInfoPayload(t *testing.T) {
 	button, err := buildPixNativeFlowButton(Button{
 		Currency: "BRL",
@@ -521,8 +656,8 @@ func TestBuildButtonAdditionalNodes(t *testing.T) {
 			if !ok || len(nativeFlowNodes) != 1 || nativeFlowNodes[0].Tag != "native_flow" {
 				t.Fatalf("interactive content = %#v, want one native_flow node", interactiveNodes[0].Content)
 			}
-			if nativeFlowNodes[0].Attrs["name"] != tt.wantNativeFlow {
-				t.Fatalf("native flow name = %v, want %q", nativeFlowNodes[0].Attrs["name"], tt.wantNativeFlow)
+			if nativeFlowNodes[0].Attrs["name"] != tt.wantNativeFlow || nativeFlowNodes[0].Attrs["v"] != "9" {
+				t.Fatalf("native flow attrs = %#v, want name=%q and v=9", nativeFlowNodes[0].Attrs, tt.wantNativeFlow)
 			}
 
 			gotBot := false

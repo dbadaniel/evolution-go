@@ -1,0 +1,40 @@
+--- a/send.go
++++ b/send.go
+@@ -947,6 +947,8 @@
+ 		return "reaction"
+ 	case msg.PollCreationMessage != nil, msg.PollUpdateMessage != nil:
+ 		return "poll"
++	case msg.ListMessage != nil:
++		return "text"
+ 	case getMediaTypeFromMessage(msg) != "":
+ 		return "media"
+ 	case msg.Conversation != nil, msg.ExtendedTextMessage != nil, msg.ProtocolMessage != nil:
+@@ -1172,7 +1174,27 @@
+ 		content = append(content, *extraParams.additionalNodes...)
+ 	}
+ 
+-	if buttonType := getButtonTypeFromMessage(message); buttonType != "" {
++	// An explicit legacy-list business node replaces only automatic list metadata.
++	hasExplicitListBiz := false
++	if message.ListMessage != nil && extraParams.additionalNodes != nil {
++		for _, node := range *extraParams.additionalNodes {
++			if node.Tag != "biz" {
++				continue
++			}
++			children, ok := node.Content.([]waBinary.Node)
++			if !ok {
++				continue
++			}
++			for _, child := range children {
++				if child.Tag == "list" {
++					hasExplicitListBiz = true
++					break
++				}
++			}
++		}
++	}
++
++	if buttonType := getButtonTypeFromMessage(message); buttonType != "" && !hasExplicitListBiz {
+ 		content = append(content, waBinary.Node{
+ 			Tag: "biz",
+ 			Content: []waBinary.Node{{

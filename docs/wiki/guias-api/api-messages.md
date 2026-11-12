@@ -489,18 +489,9 @@ curl -X POST http://localhost:4000/send/contact \
 
 ### Enviar Botões
 
-> ⚠️ **ENDPOINT DEPRECIADO**
-> 
-> Este endpoint **não funciona mais**. O WhatsApp descontinuou o suporte a botões interativos para contas que não são Business API oficial.
-> 
-> **Alternativas**:
-> - Use **Enquetes (Polls)** para coleta de respostas
-> - Use **mensagens de texto** com instruções
-> - Para soluções avançadas, migre para WhatsApp Business API oficial
+Envia botões interativos Reply, URL, call, copy e Pix. Os formatos validados para cada tipo estão documentados abaixo.
 
-~~Envia mensagem com botões interativos. Suporta diferentes tipos de botões.~~
-
-**Endpoint**: ~~`POST /send/button`~~
+**Endpoint**: `POST /send/button`
 
 **Body**:
 ```json
@@ -603,18 +594,9 @@ curl -X POST http://localhost:4000/send/button \
 
 ### Enviar Lista
 
-> ⚠️ **ENDPOINT DEPRECIADO**
-> 
-> Este endpoint **não funciona mais**. O WhatsApp descontinuou o suporte a listas interativas para contas que não são Business API oficial.
-> 
-> **Alternativas**:
-> - Use **Enquetes (Polls)** para seleção de opções
-> - Use **mensagens de texto** com numeração
-> - Para soluções avançadas, migre para WhatsApp Business API oficial
+Envia uma lista por `ListMessage` no nível principal, com `listType: SINGLE_SELECT`, metadados de dispositivo v2 e transporte `text` + `biz/list type=product_list`, sem envelopes nem nó `bot`. O patch local de whatsmeow evita nós `biz` duplicados. O usuário confirmou exibição e abertura do menu no celular e no Web. Mantém o contrato JSON abaixo, com até 10 seções e 10 opções no total; ACK HTTP 200 isolado não comprova entrega.
 
-~~Envia mensagem com menu de lista interativo.~~
-
-**Endpoint**: ~~`POST /send/list`~~
+**Endpoint**: `POST /send/list`
 
 **Body**:
 ```json

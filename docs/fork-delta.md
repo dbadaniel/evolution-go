@@ -62,10 +62,16 @@ Ported from upstream `0.7.2`:
   `id` and `copy_code`.
 - Quoted-message support recognizes nested interactive/list/buttons payloads
   inside `DocumentWithCaptionMessage`.
-- List sends preserve the old Expertsa/`whatsmeow-lib` compatibility tweak:
-  the injected `biz/list` node uses `type=product_list` even though the protobuf
-  remains a single-select `ListMessage`. This mirrors the
-  `marcelotadeujr/whatsmeow` fork discussion around list rendering.
+- List sends use top-level `ListMessage` with `SINGLE_SELECT`, device-list
+  metadata v2, `text` stanza type and one explicit `biz/list type=product_list`
+  node with reply quality-control metadata, without a bot node. The local
+  whatsmeow patch skips automatic list-business metadata only when an explicit
+  `biz/list` is already present. Phone and Web rendering/menu opening were
+  confirmed by the user on 2026-11-12 after recipient delivery receipts.
+  `InteractiveMessage/single_select` rendered on the phone but was incompatible
+  on Web; document wrappers got ACKs without delivery. PR #1221 concerns
+  selection responses (479), not originating menus. PR #1146 discusses explicit
+  business metadata, and WPPConnect classifies list stanzas as text.
 
 Preserved from Expertsa:
 
@@ -75,8 +81,7 @@ Preserved from Expertsa:
 - Existing link metadata handling remains richer than upstream for timeout,
   user-agent, OpenGraph priority, and relative image URL resolution.
 - Existing local thumbnail resize path remains in place.
-- The legacy `product_list` transport-node behavior for lists is preserved from
-  the pre-official-`whatsmeow` fork delta.
+- Reply, CTA URL and Pix retain the independently validated Expertsa builders.
 
 Ported 2026-07-31 (re-evaluation after the passkey/security pass above):
 
@@ -129,16 +134,11 @@ Preserved Expertsa behavior during this port:
 
 Ported selectively from `NathanAshford/evolution-go-custom` for CTA error 473:
 
-- CTA buttons (`url`, `call`, and `copy`) keep the existing native-flow button
-  parameters, `DocumentWithCaptionMessage`, `MessageSecret`, `MessageVersion=1`,
-  `MessageParamsJSON`, and `biz/mixed` transport nodes, but their nested
-  `InteractiveMessage` now contains only `Body`, `Footer`, and
-  `NativeFlowMessage`. The redundant `Header` and empty internal `ContextInfo`
-  were removed because that larger payload was rejected by WhatsApp with 473.
-- A real send with a single URL CTA was still rejected with 473 after slimming
-  the protobuf payload. CTA transport now keeps `biz/native_flow/mixed` but omits
-  `bot biz_bot=1`, avoiding a bot capability that the linked account may not
-  have.
+- CTA buttons (`url`, `call`, and `copy`) use a top-level `InteractiveMessage`
+  with `MessageSecret`, device-list metadata v2, `MessageVersion=1`,
+  `MessageParamsJSON`, and `biz/interactive/native_flow(v=9,name=mixed)` nodes.
+  This restores the URL CTA format previously confirmed working in the local
+  stage; the list branch must retain these changes.
 - Pix uses a top-level `InteractiveMessage`, a `payment_info` button with
   static-key `payment_settings`, `MessageParamsJSON={}`, `MessageVersion=1`,
   `MessageSecret`, device-list metadata v2, and a flat

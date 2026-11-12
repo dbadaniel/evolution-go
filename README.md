@@ -41,8 +41,8 @@ Ambientes de produção reais sofrem com oscilações de rede, mudanças silenci
 ### 4. Mensagens Interativas Multiplataforma (Android, iOS e WhatsApp Web)
 - **Botões de resposta rápida (`POST /send/button`):** Replies textuais são enviados como `InteractiveMessage` no nível principal, sem envelope `ViewOnceMessage`; formato confirmado em celular e WhatsApp para Windows. Cada botão usa `type: "reply"`, `id` e `displayText`.
 - **Pix (`payment_info`):** Envia chave estática em `InteractiveMessage` no nível principal com payload de pagamento sem valor, seguindo a referência do WPPConnect. O envio foi confirmado no celular e no WhatsApp Web/Desktop na stage local. A API valida CPF Pix, normaliza sua formatação e retorna HTTP 400 para CPF inválido.
-- **Listas e CTA:** Reconciliação dos nós de transporte (`biz`, `native_flow`, `product_list`) e `DocumentWithCaptionMessage` conforme o tipo de mensagem.
-- **Correção do erro `473` em botões CTA (`url`, `call`, `copy`):** Payload enxuto sem nós `bot` incompatíveis com contas padrão vinculadas.
+- **Listas (`POST /send/list`):** `ListMessage` no nível principal com transporte `product_list`, sem envelope ou nó `bot`. Envio e abertura do menu confirmados no celular e WhatsApp Web. O ajuste restrito da biblioteca está em `third_party/whatsmeow`.
+- **Botões CTA (`url`, `call`, `copy`):** `InteractiveMessage` no nível principal com metadados de dispositivo v2 e nó `native_flow` v9; manter esse formato preserva a entrega de URL validada na stage.
 - **Carrossel (`POST /send/carousel`):** Envio de cards ricos com imagens, textos, rodapés, botões interativos e geração automática de thumbnails JPEG para carregamento instantâneo.
 
 ### 5. Pareamento com Passkey (WebAuthn), Mídia Avançada e Regra de 9º Dígito BR
@@ -233,7 +233,7 @@ http://localhost:8080/manager/login
 | `POST`   | `/send/text`           | Envia mensagem de texto (suporta menções, quote e `forwardingScore`)                    |
 | `POST`   | `/send/media`          | Envia mídia via URL, upload multipart ou Base64 (gera thumbnail de PDF automaticamente) |
 | `POST`   | `/send/button`         | Envia mensagens com botões interativos (Reply, CTA URL/Call/Copy, Pix)                  |
-| `POST`   | `/send/list`           | Envia mensagens de lista interativa multiplataforma                                     |
+| `POST`   | `/send/list`           | Lista interativa validada no celular e WhatsApp Web                                     |
 | `POST`   | `/send/carousel`       | Envia carrossel de cards interativos com imagens e botões                               |
 | `POST`   | `/send/status/text`    | Publica Status em texto (`status@broadcast`)                                            |
 | `POST`   | `/send/status/media`   | Publica Status em imagem ou vídeo                                                       |
