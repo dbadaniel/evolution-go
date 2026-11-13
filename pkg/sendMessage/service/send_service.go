@@ -245,7 +245,9 @@ type CarouselCardHeaderStruct struct {
 	Title    string `json:"title"`
 	Subtitle string `json:"subtitle"`
 	ImageUrl string `json:"imageUrl,omitempty"`
-	VideoUrl string `json:"videoUrl,omitempty"`
+	// ImageFile carries the image itself as base64, optionally as a data URI.
+	ImageFile string `json:"imageFile,omitempty"`
+	VideoUrl  string `json:"videoUrl,omitempty"`
 }
 
 type CarouselCardBodyStruct struct {
@@ -3682,6 +3684,36 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 	return messageSent, nil
 }
 
+// decodeCarouselImageFile accepts plain base64 or a data URI.
+func decodeCarouselImageFile(value string) ([]byte, error) {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "data:") {
+		comma := strings.Index(value, ",")
+		if comma < 0 {
+			return nil, errors.New("invalid data URI")
+		}
+		value = value[comma+1:]
+	}
+	data, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		data, err = base64.RawStdEncoding.DecodeString(value)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, errors.New("empty image")
+	}
+	return data, nil
+}
+
+func carouselImageMimetype(data []byte) string {
+	if detected := http.DetectContentType(data); strings.HasPrefix(detected, "image/") {
+		return detected
+	}
+	return "image/jpeg"
+}
+
 func (s *sendService) SendCarousel(data *CarouselStruct, instance *instance_model.Instance) (*MessageSendStruct, error) {
 	client, err := s.ensureClientConnected(instance.Id)
 	if err != nil {
@@ -3726,31 +3758,44 @@ func (s *sendService) SendCarousel(data *CarouselStruct, instance *instance_mode
 		}
 
 		// Add media to header if URL provided
-		if card.Header.ImageUrl != "" || card.Header.VideoUrl != "" {
+		if card.Header.ImageUrl != "" || card.Header.ImageFile != "" || card.Header.VideoUrl != "" {
 			header := interactiveCard.Header
 
-			if card.Header.ImageUrl != "" {
-				// Download image
-				resp, err := http.Get(card.Header.ImageUrl)
-				if err == nil {
-					defer resp.Body.Close()
-					fileData, err := io.ReadAll(resp.Body)
+			if card.Header.ImageUrl != "" || card.Header.ImageFile != "" {
+				var fileData []byte
+				var err error
+				if card.Header.ImageFile != "" {
+					fileData, err = decodeCarouselImageFile(card.Header.ImageFile)
+				} else {
+					var resp *http.Response
+					resp, err = http.Get(card.Header.ImageUrl)
 					if err == nil {
+						fileData, err = io.ReadAll(resp.Body)
+						resp.Body.Close()
+						if err == nil && resp.StatusCode >= 300 {
+							err = fmt.Errorf("status %d", resp.StatusCode)
+						}
+					}
+				}
+				if err == nil {
+					{
 						uploaded, err := client.Upload(context.Background(), fileData, whatsmeow.MediaImage)
 						if err == nil {
 							header.HasMediaAttachment = proto.Bool(true)
 							thumbnail := s.resizeThumbnail(fileData, 600)
+							imageMessage := &waE2E.ImageMessage{
+								URL:           proto.String(uploaded.URL),
+								DirectPath:    proto.String(uploaded.DirectPath),
+								MediaKey:      uploaded.MediaKey,
+								Mimetype:      proto.String(carouselImageMimetype(fileData)),
+								FileEncSHA256: uploaded.FileEncSHA256,
+								FileSHA256:    uploaded.FileSHA256,
+								FileLength:    proto.Uint64(uint64(len(fileData))),
+								JPEGThumbnail: thumbnail,
+							}
+							populateImageDimensions(imageMessage, fileData)
 							header.Media = &waE2E.InteractiveMessage_Header_ImageMessage{
-								ImageMessage: &waE2E.ImageMessage{
-									URL:           proto.String(uploaded.URL),
-									DirectPath:    proto.String(uploaded.DirectPath),
-									MediaKey:      uploaded.MediaKey,
-									Mimetype:      proto.String("image/jpeg"),
-									FileEncSHA256: uploaded.FileEncSHA256,
-									FileSHA256:    uploaded.FileSHA256,
-									FileLength:    proto.Uint64(uint64(len(fileData))),
-									JPEGThumbnail: thumbnail,
-								},
+								ImageMessage: imageMessage,
 							}
 
 						}
@@ -3781,6 +3826,10 @@ func (s *sendService) SendCarousel(data *CarouselStruct, instance *instance_mode
 					}
 				}
 			}
+		}
+
+		if (card.Header.ImageUrl != "" || card.Header.ImageFile != "" || card.Header.VideoUrl != "") && !interactiveCard.Header.GetHasMediaAttachment() {
+			return nil, fmt.Errorf("falha ao baixar ou enviar a mídia do cartão %d do carrossel", i+1)
 		}
 
 		// Add footer if exists
@@ -3900,6 +3949,9 @@ func (s *sendService) SendCarousel(data *CarouselStruct, instance *instance_mode
 		Number: data.Number,
 		Delay:  data.Delay,
 		Quoted: data.Quoted,
+		// Interactive stanzas without the business node are accepted by the
+		// server but not delivered; reuse the envelope of the CTA path.
+		AdditionalNodes: buildButtonAdditionalNodes(false, true, data.Number),
 	})
 
 	if err != nil {

@@ -1,5 +1,7 @@
 # API de Mensagens Interativas
 
+Para integrar a versão ExpertSA, consulte o [guia de utilização de botões, Pix e listas](guia-botoes-expertsa.md), conferido no código em 13/11/2026. Ele distingue validação obrigatória, campos necessários para uso e cenários efetivamente testados.
+
 Documentação dos endpoints de mensagens interativas no WhatsApp. A compatibilidade validada de cada tipo está indicada na tabela ao final.
 
 ## 📋 Índice
@@ -56,7 +58,7 @@ apikey: SUA-CHAVE-API
 | `title` | string | ✅ Sim | Título exibido em negrito acima do corpo |
 | `footer` | string | ✅ Sim | Texto pequeno no rodapé. **Não enviar vazio** |
 | `delay` | int32 | ❌ Não | Delay em milissegundos antes de enviar |
-| `mentionedJid` | string | ❌ Não | JID do usuário a mencionar |
+| `mentionedJid` | array de strings | ❌ Não | JIDs dos usuários a mencionar |
 | `mentionAll` | bool | ❌ Não | Mencionar todos os participantes (apenas grupos) |
 | `formatJid` | bool | ❌ Não | Formatar número automaticamente (padrão: true) |
 | `quoted` | object | ❌ Não | Mensagem a ser citada |
@@ -713,7 +715,7 @@ A instância deve ter o evento `BUTTON_CLICK` ou `MESSAGE` habilitado na configu
 
 | Regra | Detalhe |
 |-------|---------|
-| Footer vazio | **Não** envie campo `footer` vazio. Omita o campo ou preencha com texto |
+| Rodapé | `/send/button` exige `footer`; `/send/list` exige `footerText`. Não podem ser omitidos ou vazios nesses endpoints. No carrossel, o rodapé é opcional. |
 | Imagens no carrossel | **Todos** os cards devem ter `imageUrl` para renderizar corretamente |
 | Mínimo de cards | Carrossel requer no **mínimo 2 cards** |
 | Thumbnails | Gerados automaticamente pela API (72px JPEG) para carregamento instantâneo |
